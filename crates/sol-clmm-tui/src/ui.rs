@@ -2219,9 +2219,8 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         Cell::from("when"),
         Cell::from("op"),
         Cell::from("venue"),
-        Cell::from("SOL Δ"),
-        Cell::from("token Δ"),
-        Cell::from("summary"),
+        Cell::from("Δ"),
+        Cell::from("note"),
     ])
     .style(theme::table_header());
 
@@ -2235,19 +2234,19 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
             Cell::from("—"),
             Cell::from("—"),
             Cell::from("—"),
-            Cell::from("—"),
         ])]
     } else {
         app.history
             .iter()
             .map(|r| {
-                let sol = r.sol_delta_label();
-                let tokens = r.token_delta_label();
-                let summary = r
+                let deltas = r.deltas_label();
+                let note = r
                     .summary
                     .as_deref()
                     .or(r.paid_label.as_deref())
                     .unwrap_or("—");
+                // Keep note short so it sits next to Δ (not shoved to the far right).
+                let note = truncate_history_note(note, 36);
                 Row::new([
                     Cell::from(r.time_label()),
                     Cell::from(Span::styled(r.op.clone(), theme::accent_text())),
@@ -2257,9 +2256,8 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
                             .unwrap_or("—")
                             .to_string(),
                     ),
-                    Cell::from(Span::styled(sol, theme::ok())),
-                    Cell::from(Span::styled(tokens, theme::body())),
-                    Cell::from(Span::styled(summary.to_string(), theme::muted())),
+                    Cell::from(Span::styled(deltas, theme::ok())),
+                    Cell::from(Span::styled(note, theme::muted())),
                 ])
                 .style(theme::body())
             })
@@ -2267,12 +2265,11 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let widths = [
-        Constraint::Length(12),
-        Constraint::Length(12),
+        Constraint::Length(11),
         Constraint::Length(10),
-        Constraint::Length(12),
-        Constraint::Min(16),
-        Constraint::Min(10),
+        Constraint::Length(8),
+        Constraint::Min(22),
+        Constraint::Length(36),
     ];
 
     let title = format!(
@@ -2286,6 +2283,16 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_symbol("▸ ");
 
     frame.render_stateful_widget(table, area, &mut app.history_table_state);
+}
+
+fn truncate_history_note(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max {
+        return t.to_string();
+    }
+    let mut out: String = t.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 /// Footer: status/keys + session RPC counter/history (each row needs borders).

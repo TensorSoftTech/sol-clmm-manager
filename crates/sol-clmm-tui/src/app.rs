@@ -984,11 +984,19 @@ impl App {
             return;
         };
         let sig = row.signature.clone();
-        let tokens = row.token_delta_label();
-        let sol = row.sol_delta_label();
+        let deltas = row.deltas_label();
+        let note = row
+            .summary
+            .clone()
+            .or_else(|| row.paid_label.clone())
+            .unwrap_or_default();
         self.status_before_links = Some(self.status_line.clone());
         self.links_overlay = true;
-        self.status_line = format!("sig {sig} · {sol} · {tokens} · p hide");
+        self.status_line = if note.is_empty() {
+            format!("sig {sig} · {deltas} · p hide")
+        } else {
+            format!("sig {sig} · {deltas} · {note} · p hide")
+        };
     }
 
     /// Open help overlay; remembers current screen for Esc.
@@ -2890,7 +2898,11 @@ impl App {
             .map(|k| k.to_bytes())
             .collect();
         // Mints + labels for before/after wallet balance Δ (detail or create preview).
-        let bal_owner = self.wallet;
+        // Owner = signer pubkey (not `self.wallet`, which can be unset).
+        let bal_owner = read_keypair_file(&path)
+            .ok()
+            .map(|k| k.pubkey())
+            .or(self.wallet);
         let (mint_a, mint_b, sym_a, sym_b, dec_a, dec_b) = self
             .detail
             .as_ref()
@@ -2994,17 +3006,41 @@ impl App {
                     Some(sb),
                     Some(da),
                     Some(db),
-                ) => Some(sol_clmm_manager::WriteTokenDelta {
-                    mint_a: ma.to_string(),
-                    mint_b: mb.to_string(),
-                    // WSOL ATA kept distinct from native SOL column.
-                    symbol_a: if before.a.is_wsol { "WSOL".into() } else { sa },
-                    symbol_b: if before.b.is_wsol { "WSOL".into() } else { sb },
-                    decimals_a: da,
-                    decimals_b: db,
-                    delta_a: after.a.ata_amount as i64 - before.a.ata_amount as i64,
-                    delta_b: after.b.ata_amount as i64 - before.b.ata_amount as i64,
-                }),
+                ) => {
+                    // WSOL leg: native + ATA so wrap/unwrap/compound shows real SOL Δ.
+                    let (sym_a, dec_a, delta_a) = if before.a.is_wsol {
+                        let b = before.sol_lamports as i128 + before.a.ata_amount as i128;
+                        let a = after.sol_lamports as i128 + after.a.ata_amount as i128;
+                        ("SOL".into(), 9u8, (a - b) as i64)
+                    } else {
+                        (
+                            sa,
+                            da,
+                            after.a.ata_amount as i64 - before.a.ata_amount as i64,
+                        )
+                    };
+                    let (sym_b, dec_b, delta_b) = if before.b.is_wsol {
+                        let b = before.sol_lamports as i128 + before.b.ata_amount as i128;
+                        let a = after.sol_lamports as i128 + after.b.ata_amount as i128;
+                        ("SOL".into(), 9u8, (a - b) as i64)
+                    } else {
+                        (
+                            sb,
+                            db,
+                            after.b.ata_amount as i64 - before.b.ata_amount as i64,
+                        )
+                    };
+                    Some(sol_clmm_manager::WriteTokenDelta {
+                        mint_a: ma.to_string(),
+                        mint_b: mb.to_string(),
+                        symbol_a: sym_a,
+                        symbol_b: sym_b,
+                        decimals_a: dec_a,
+                        decimals_b: dec_b,
+                        delta_a,
+                        delta_b,
+                    })
+                }
                 _ => None,
             };
             let _ = tx.send(BgFetchResult::Write {

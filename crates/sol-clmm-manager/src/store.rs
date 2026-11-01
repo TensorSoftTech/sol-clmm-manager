@@ -162,7 +162,7 @@ impl WriteTxRow {
         }
     }
 
-    /// `USDC −1.2 · WSOL +0.05` (empty sides omitted).
+    /// `USDC −1.2 · SOL +0.05` (zero legs omitted).
     pub fn token_delta_label(&self) -> String {
         let a = self.format_token_delta(true);
         let b = self.format_token_delta(false);
@@ -170,6 +170,26 @@ impl WriteTxRow {
             (None, None) => "—".into(),
             (Some(a), None) | (None, Some(a)) => a,
             (Some(a), Some(b)) => format!("{a} · {b}"),
+        }
+    }
+
+    /// One-line Δ for the history table (tokens preferred; else native SOL spend).
+    pub fn deltas_label(&self) -> String {
+        let tokens = self.token_delta_label();
+        if tokens != "—" {
+            // If neither leg is SOL/WSOL, prepend native spend when known.
+            let has_sol_leg = self.symbol_a.as_deref().is_some_and(|s| s == "SOL" || s == "WSOL")
+                || self.symbol_b.as_deref().is_some_and(|s| s == "SOL" || s == "WSOL");
+            if has_sol_leg {
+                tokens
+            } else {
+                match self.sol_spent_lamports {
+                    Some(l) if l > 0 => format!("{} · {}", self.sol_delta_label(), tokens),
+                    _ => tokens,
+                }
+            }
+        } else {
+            self.sol_delta_label()
         }
     }
 
@@ -187,9 +207,8 @@ impl WriteTxRow {
                 self.delta_b?,
             )
         };
-        // Skip zero noise unless we have no other side.
         if delta == 0 {
-            return Some(format!("{sym} 0"));
+            return None;
         }
         let abs = crate::format_amount(u128::from(delta.unsigned_abs()), dec);
         if delta < 0 {
