@@ -497,7 +497,17 @@ impl Client {
             Venue::RaydiumClmm => {
                 raydium_clmm::write::plan_withdraw(authority, detail, liquidity_delta, sol_leg)
             }
-            Venue::MeteoraDlmm => meteora_dlmm::write::plan_withdraw(authority, detail, sol_leg),
+            Venue::MeteoraDlmm => {
+                // DLMM remove uses per-bin bps (1..=10_000), not raw L.
+                let bps = if detail.position_liquidity == 0 {
+                    10_000u16
+                } else {
+                    ((liquidity_delta.saturating_mul(10_000) / detail.position_liquidity)
+                        .min(10_000)) as u16
+                };
+                anyhow::ensure!(bps >= 1, "withdraw bps is 0");
+                meteora_dlmm::write::plan_withdraw(authority, detail, bps, sol_leg)
+            }
         }
     }
 
@@ -620,17 +630,23 @@ impl Client {
             .0)
     }
 
-    /// Claim fees+rewards + withdraw full L — keep position account.
+    /// Claim fees+rewards + withdraw `liquidity_delta` — keep position account.
+    /// DLMM maps ΔL → per-bin bps (same % across bins).
     pub fn plan_claim_and_withdraw(
         &self,
         authority: Pubkey,
         detail: &PositionDetail,
+        liquidity_delta: u128,
         sol_leg: SolLegMode,
     ) -> Result<WritePlan> {
+        let liq = liquidity_delta.min(detail.position_liquidity);
         match detail.row.venue {
-            Venue::OrcaWhirlpool => {
-                orca_whirlpool::write::plan_claim_and_withdraw(authority, detail, sol_leg)
-            }
+            Venue::OrcaWhirlpool => orca_whirlpool::write::plan_claim_and_withdraw(
+                authority,
+                detail,
+                liq,
+                sol_leg,
+            ),
             Venue::RaydiumClmm | Venue::MeteoraDlmm => {
                 // Venue claim (ATAs, no unwrap yet) → withdraw (ATAs + decrease + unwrap).
                 // Do not use Client::plan_claim — that would unwrap before withdraw.
@@ -639,10 +655,15 @@ impl Client {
                     Venue::MeteoraDlmm => meteora_dlmm::write::plan_claim(authority, detail)?,
                     Venue::OrcaWhirlpool => unreachable!(),
                 };
-                let liq = detail.position_liquidity;
                 if liq > 0 {
                     let withdraw = self.plan_withdraw(authority, detail, liq, sol_leg)?;
                     claim.instructions.extend(withdraw.instructions);
+                    let pct = if detail.position_liquidity > 0 {
+                        (liq.saturating_mul(100) / detail.position_liquidity).min(100)
+                    } else {
+                        0
+                    };
+                    claim.summary = format!("claim + withdraw {pct}% · ΔL={liq}");
                 } else {
                     claim.instructions.extend(maybe_unwrap_after(
                         sol_leg,
@@ -650,9 +671,11 @@ impl Client {
                         &detail.token_a.mint,
                         &detail.token_b.mint,
                     ));
+                    claim.summary = "claim only · no liquidity".into();
                 }
                 claim.op = WriteOp::ClaimAndWithdraw;
-                claim.summary = format!("claim + withdraw · L={liq}");
+                claim.expected.fee_a = detail.fee_a;
+                claim.expected.fee_b = detail.fee_b;
                 claim.expected.note =
                     "ensure ATAs → claim → withdraw → unwrap? · position stays".into();
                 Ok(claim)

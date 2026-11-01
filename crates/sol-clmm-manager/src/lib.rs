@@ -63,8 +63,9 @@ pub use stables::{
     stablecoin_mints, wsol_mint,
 };
 pub use store::{
-    APP_DIR_NAME, AppSettings, CachedToken, DEFAULT_DB_FILE, Store, WriteTokenDelta, WriteTxRow,
-    default_config_dir, default_db_path, display_path, expand_tilde, resolve_existing_db,
+    APP_DIR_NAME, AppSettings, CachedToken, DEFAULT_DB_FILE, Store, WritePoolMeta, WriteTokenDelta,
+    WriteTxRow, default_config_dir, default_db_path, display_path, expand_tilde,
+    resolve_existing_db,
 };
 pub use tokens::{
     TokenInfo, resolve_mints, resolve_mints_with_keys, resolve_tokens, resolve_tokens_with_keys,

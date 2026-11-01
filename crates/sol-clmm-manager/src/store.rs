@@ -74,6 +74,19 @@ pub struct CachedToken {
     pub decimals: u8,
 }
 
+/// Pool identity stored with every landed write (even when Δ fetch fails).
+#[derive(Debug, Clone)]
+pub struct WritePoolMeta {
+    /// e.g. `SOL / USDC`
+    pub pool_label: String,
+    pub mint_a: String,
+    pub mint_b: String,
+    pub symbol_a: String,
+    pub symbol_b: String,
+    pub decimals_a: u8,
+    pub decimals_b: u8,
+}
+
 /// Pool-mint ATA deltas recorded with a landed write (after − before).
 #[derive(Debug, Clone)]
 pub struct WriteTokenDelta {
@@ -98,12 +111,14 @@ pub struct WriteTxRow {
     pub venue: Option<String>,
     pub position: Option<String>,
     pub pool: Option<String>,
+    /// Human pool pair (`SOL / USDC`).
+    pub pool_label: Option<String>,
     pub tip_lamports: Option<u64>,
     pub fee_lamports: Option<u64>,
     pub sol_spent_lamports: Option<u64>,
     pub summary: Option<String>,
     pub paid_label: Option<String>,
-    /// Pool mint A (base58) when token Δ was recorded.
+    /// Pool mint A (base58) when recorded.
     pub mint_a: Option<String>,
     pub mint_b: Option<String>,
     pub symbol_a: Option<String>,
@@ -121,7 +136,7 @@ impl WriteTxRow {
         self.created_at.parse().ok()
     }
 
-    /// Compact UTC stamp for the table (`MM-DD HH:MM`).
+    /// UTC stamp with date + hour (`YYYY-MM-DD HH:MM`).
     pub fn time_label(&self) -> String {
         let Some(secs) = self.created_unix() else {
             return "—".into();
@@ -132,8 +147,22 @@ impl WriteTxRow {
         let h = tod / 3600;
         let m = (tod % 3600) / 60;
         let (y, mo, d) = unix_days_to_ymd(days);
-        let _ = y;
-        format!("{mo:02}-{d:02} {h:02}:{m:02}")
+        format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}")
+    }
+
+    /// Pair label for the table (`SOL/USDC`).
+    pub fn pair_label(&self) -> String {
+        if let Some(lbl) = self.pool_label.as_deref().filter(|s| !s.is_empty()) {
+            return lbl.replace(" / ", "/");
+        }
+        match (self.symbol_a.as_deref(), self.symbol_b.as_deref()) {
+            (Some(a), Some(b)) => format!("{a}/{b}"),
+            _ => self
+                .pool
+                .as_deref()
+                .map(Self::short_pk)
+                .unwrap_or_else(|| "—".into()),
+        }
     }
 
     pub fn short_sig(&self) -> String {
@@ -219,7 +248,7 @@ impl WriteTxRow {
     }
 }
 
-/// Add token-Δ columns to older DBs (ignore if already present).
+/// Add token-Δ / pool_label columns to older DBs (ignore if already present).
 fn migrate_write_txs_token_deltas(conn: &Connection) -> Result<()> {
     for sql in [
         "ALTER TABLE write_txs ADD COLUMN mint_a TEXT",
@@ -230,6 +259,7 @@ fn migrate_write_txs_token_deltas(conn: &Connection) -> Result<()> {
         "ALTER TABLE write_txs ADD COLUMN decimals_b INTEGER",
         "ALTER TABLE write_txs ADD COLUMN delta_a INTEGER",
         "ALTER TABLE write_txs ADD COLUMN delta_b INTEGER",
+        "ALTER TABLE write_txs ADD COLUMN pool_label TEXT",
     ] {
         let _ = conn.execute(sql, []);
     }
@@ -498,21 +528,43 @@ impl Store {
         sol_spent_lamports: Option<u64>,
         summary: Option<&str>,
         paid_label: Option<&str>,
+        pool_meta: Option<&WritePoolMeta>,
         token_delta: Option<&WriteTokenDelta>,
     ) -> Result<()> {
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_else(|_| "0".into());
+        let pm = pool_meta;
         let td = token_delta;
+        // Prefer measured Δ symbols (WSOL→SOL); fall back to pool meta for identity.
+        let mint_a = td
+            .map(|t| t.mint_a.as_str())
+            .or_else(|| pm.map(|m| m.mint_a.as_str()));
+        let mint_b = td
+            .map(|t| t.mint_b.as_str())
+            .or_else(|| pm.map(|m| m.mint_b.as_str()));
+        let symbol_a = td
+            .map(|t| t.symbol_a.as_str())
+            .or_else(|| pm.map(|m| m.symbol_a.as_str()));
+        let symbol_b = td
+            .map(|t| t.symbol_b.as_str())
+            .or_else(|| pm.map(|m| m.symbol_b.as_str()));
+        let decimals_a = td
+            .map(|t| t.decimals_a as i64)
+            .or_else(|| pm.map(|m| m.decimals_a as i64));
+        let decimals_b = td
+            .map(|t| t.decimals_b as i64)
+            .or_else(|| pm.map(|m| m.decimals_b as i64));
+        let pool_label = pm.map(|m| m.pool_label.as_str());
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO write_txs (
-                    created_at, signature, op, venue, position, pool,
+                    created_at, signature, op, venue, position, pool, pool_label,
                     tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label,
                     mint_a, mint_b, symbol_a, symbol_b, decimals_a, decimals_b, delta_a, delta_b
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                           ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     created_at,
                     signature,
@@ -520,17 +572,18 @@ impl Store {
                     venue,
                     position,
                     pool,
+                    pool_label,
                     tip_lamports.map(|v| v as i64),
                     fee_lamports.map(|v| v as i64),
                     sol_spent_lamports.map(|v| v as i64),
                     summary,
                     paid_label,
-                    td.map(|t| t.mint_a.as_str()),
-                    td.map(|t| t.mint_b.as_str()),
-                    td.map(|t| t.symbol_a.as_str()),
-                    td.map(|t| t.symbol_b.as_str()),
-                    td.map(|t| t.decimals_a as i64),
-                    td.map(|t| t.decimals_b as i64),
+                    mint_a,
+                    mint_b,
+                    symbol_a,
+                    symbol_b,
+                    decimals_a,
+                    decimals_b,
                     td.map(|t| t.delta_a),
                     td.map(|t| t.delta_b),
                 ],
@@ -539,58 +592,80 @@ impl Store {
         Ok(())
     }
 
-    /// Newest-first write history (landed manage / create txs).
-    pub fn list_write_txs(&self, limit: usize) -> Result<Vec<WriteTxRow>> {
+    /// Newest-first write history. `position` filters to one position pubkey when set.
+    pub fn list_write_txs(
+        &self,
+        limit: usize,
+        position: Option<&str>,
+    ) -> Result<Vec<WriteTxRow>> {
         let lim = limit.clamp(1, 5_000) as i64;
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, created_at, signature, op, venue, position, pool,
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<WriteTxRow> {
+            Ok(WriteTxRow {
+                id: row.get::<_, i64>(0)? as u64,
+                created_at: row.get(1)?,
+                signature: row.get(2)?,
+                op: row.get(3)?,
+                venue: row.get(4)?,
+                position: row.get(5)?,
+                pool: row.get(6)?,
+                pool_label: row.get(7)?,
+                tip_lamports: row
+                    .get::<_, Option<i64>>(8)?
+                    .map(|v| v.max(0) as u64),
+                fee_lamports: row
+                    .get::<_, Option<i64>>(9)?
+                    .map(|v| v.max(0) as u64),
+                sol_spent_lamports: row
+                    .get::<_, Option<i64>>(10)?
+                    .map(|v| v.max(0) as u64),
+                summary: row.get(11)?,
+                paid_label: row.get(12)?,
+                mint_a: row.get(13)?,
+                mint_b: row.get(14)?,
+                symbol_a: row.get(15)?,
+                symbol_b: row.get(16)?,
+                decimals_a: row
+                    .get::<_, Option<i64>>(17)?
+                    .map(|v| v.clamp(0, 18) as u8),
+                decimals_b: row
+                    .get::<_, Option<i64>>(18)?
+                    .map(|v| v.clamp(0, 18) as u8),
+                delta_a: row.get(19)?,
+                delta_b: row.get(20)?,
+            })
+        };
+        let sql_all = "SELECT id, created_at, signature, op, venue, position, pool, pool_label,
                         tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label,
                         mint_a, mint_b, symbol_a, symbol_b, decimals_a, decimals_b, delta_a, delta_b
                  FROM write_txs
                  ORDER BY id DESC
-                 LIMIT ?1",
-            )
-            .context("list_write_txs prepare")?;
-        let rows = stmt
-            .query_map(params![lim], |row| {
-                Ok(WriteTxRow {
-                    id: row.get::<_, i64>(0)? as u64,
-                    created_at: row.get(1)?,
-                    signature: row.get(2)?,
-                    op: row.get(3)?,
-                    venue: row.get(4)?,
-                    position: row.get(5)?,
-                    pool: row.get(6)?,
-                    tip_lamports: row
-                        .get::<_, Option<i64>>(7)?
-                        .map(|v| v.max(0) as u64),
-                    fee_lamports: row
-                        .get::<_, Option<i64>>(8)?
-                        .map(|v| v.max(0) as u64),
-                    sol_spent_lamports: row
-                        .get::<_, Option<i64>>(9)?
-                        .map(|v| v.max(0) as u64),
-                    summary: row.get(10)?,
-                    paid_label: row.get(11)?,
-                    mint_a: row.get(12)?,
-                    mint_b: row.get(13)?,
-                    symbol_a: row.get(14)?,
-                    symbol_b: row.get(15)?,
-                    decimals_a: row
-                        .get::<_, Option<i64>>(16)?
-                        .map(|v| v.clamp(0, 18) as u8),
-                    decimals_b: row
-                        .get::<_, Option<i64>>(17)?
-                        .map(|v| v.clamp(0, 18) as u8),
-                    delta_a: row.get(18)?,
-                    delta_b: row.get(19)?,
-                })
-            })
-            .context("list_write_txs query")?
-            .collect::<Result<Vec<_>, _>>()
-            .context("list_write_txs rows")?;
+                 LIMIT ?1";
+        let sql_pos = "SELECT id, created_at, signature, op, venue, position, pool, pool_label,
+                        tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label,
+                        mint_a, mint_b, symbol_a, symbol_b, decimals_a, decimals_b, delta_a, delta_b
+                 FROM write_txs
+                 WHERE position = ?1
+                 ORDER BY id DESC
+                 LIMIT ?2";
+        let rows = if let Some(pos) = position {
+            let mut stmt = self
+                .conn
+                .prepare(sql_pos)
+                .context("list_write_txs prepare position")?;
+            stmt.query_map(params![pos, lim], map_row)
+                .context("list_write_txs query position")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("list_write_txs rows position")?
+        } else {
+            let mut stmt = self
+                .conn
+                .prepare(sql_all)
+                .context("list_write_txs prepare")?;
+            stmt.query_map(params![lim], map_row)
+                .context("list_write_txs query")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("list_write_txs rows")?
+        };
         Ok(rows)
     }
 
@@ -867,6 +942,15 @@ mod tests {
         let path = std::env::temp_dir().join(format!("sol-clmm-wtx-{stamp}.db"));
         let _ = fs::remove_file(&path);
         let store = Store::open(&path, false).unwrap();
+        let meta = WritePoolMeta {
+            pool_label: "SOL / USDC".into(),
+            mint_a: "MintA".into(),
+            mint_b: "MintB".into(),
+            symbol_a: "SOL".into(),
+            symbol_b: "USDC".into(),
+            decimals_a: 9,
+            decimals_b: 6,
+        };
         store
             .record_write_tx(
                 "sigAAA",
@@ -879,6 +963,7 @@ mod tests {
                 Some(6000),
                 Some("claim fees"),
                 None,
+                Some(&meta),
                 None,
             )
             .unwrap();
@@ -904,17 +989,38 @@ mod tests {
                 None,
                 Some("compound no-swap"),
                 None,
+                Some(&meta),
                 Some(&td),
             )
             .unwrap();
-        let rows = store.list_write_txs(10).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].signature, "sigBBB");
-        assert_eq!(rows[0].delta_a, Some(-1_000_000));
-        assert_eq!(rows[0].symbol_b.as_deref(), Some("USDC"));
-        assert!(rows[0].token_delta_label().contains("USDC"));
-        assert_eq!(rows[1].op, "claim");
-        assert!(rows[1].delta_a.is_none());
+        store
+            .record_write_tx(
+                "sigCCC",
+                "deposit",
+                Some("orca"),
+                Some("pos2"),
+                Some("pool2"),
+                None,
+                None,
+                None,
+                Some("other position"),
+                None,
+                Some(&meta),
+                None,
+            )
+            .unwrap();
+        let rows = store.list_write_txs(10, None).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].signature, "sigCCC");
+        let pos1 = store.list_write_txs(10, Some("pos1")).unwrap();
+        assert_eq!(pos1.len(), 2);
+        assert_eq!(pos1[0].signature, "sigBBB");
+        assert_eq!(pos1[0].delta_a, Some(-1_000_000));
+        assert_eq!(pos1[0].pair_label(), "SOL/USDC");
+        assert!(pos1[0].token_delta_label().contains("USDC"));
+        assert_eq!(pos1[1].op, "claim");
+        assert!(pos1[1].delta_a.is_none());
+        assert_eq!(pos1[1].pool_label.as_deref(), Some("SOL / USDC"));
         let _ = fs::remove_file(&path);
     }
 }

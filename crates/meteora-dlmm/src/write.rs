@@ -141,16 +141,22 @@ fn remove_liquidity_accounts(authority: Pubkey, detail: &PositionDetail) -> Vec<
     ]
 }
 
-/// Borsh: `Vec<{ bin_id: i32, bps_to_remove: u16 }>` — remove 100% of each bin in range.
-fn remove_all_bins_data(lower: i32, upper: i32) -> Vec<u8> {
+/// Borsh: `Vec<{ bin_id: i32, bps_to_remove: u16 }>` for each bin in `[lower, upper]`.
+/// `bps` is 1..=10_000 (basis points of each bin's liquidity).
+fn remove_bins_data(lower: i32, upper: i32, bps: u16) -> Vec<u8> {
+    let bps = bps.clamp(1, 10_000);
     let n = (upper - lower + 1).max(0) as u32;
     let mut data = REMOVE_LIQUIDITY.to_vec();
     data.extend_from_slice(&n.to_le_bytes());
     for bin_id in lower..=upper {
         data.extend_from_slice(&bin_id.to_le_bytes());
-        data.extend_from_slice(&10_000u16.to_le_bytes()); // 100% bps
+        data.extend_from_slice(&bps.to_le_bytes());
     }
     data
+}
+
+fn remove_all_bins_data(lower: i32, upper: i32) -> Vec<u8> {
+    remove_bins_data(lower, upper, 10_000)
 }
 
 pub fn remove_liquidity_ix(accounts: Vec<AccountMeta>, data_tail: Vec<u8>) -> Instruction {
@@ -383,12 +389,15 @@ pub fn plan_deposit_with_strategy(
     })
 }
 
+/// Withdraw `bps`/10_000 of each bin in the position range (1..=10_000).
 pub fn plan_withdraw(
     authority: Pubkey,
     detail: &PositionDetail,
+    bps: u16,
     sol_leg: SolLegMode,
 ) -> Result<WritePlan> {
-    let data = remove_all_bins_data(detail.row.tick_lower, detail.row.tick_upper);
+    let bps = bps.clamp(1, 10_000);
+    let data = remove_bins_data(detail.row.tick_lower, detail.row.tick_upper, bps);
     // Recreate WSOL ATA if closed by a previous unwrap, then withdraw, then unwrap.
     let mut ixs = ensure_pool_atas_ixs(&authority, &detail.token_a.mint, &detail.token_b.mint);
     ixs.push(Instruction {
@@ -402,17 +411,18 @@ pub fn plan_withdraw(
         &detail.token_a.mint,
         &detail.token_b.mint,
     ));
+    let pct = bps as f64 / 100.0;
     Ok(WritePlan {
         op: WriteOp::Withdraw,
         venue_label: "meteora dlmm".into(),
         summary: format!(
-            "withdraw all bins [{}, {}]",
+            "withdraw {pct}% bins [{}, {}] · {bps} bps",
             detail.row.tick_lower, detail.row.tick_upper
         ),
         instructions: ixs,
         follow_up: None,
         expected: ExpectedDeltas {
-            note: "ensure ATAs → remove_liquidity 100% → unwrap?".into(),
+            note: format!("ensure ATAs → remove_liquidity {bps} bps → unwrap?"),
             ..Default::default()
         },
         payer: authority,

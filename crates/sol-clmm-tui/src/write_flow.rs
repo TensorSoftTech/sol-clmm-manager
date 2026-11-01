@@ -2,9 +2,9 @@
 
 use sol_clmm_manager::{
     CreatePositionParams, DepositAnalysis, DepositShape, DepositSizing, DlmmStrategy, PoolPreview,
-    RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan, analyze_deposit,
-    compound_fee_plan, format_amount, format_price, is_wsol, parse_ui_amount, pool_has_wsol,
-    range_deposit_side,
+    RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan, amounts_for_liquidity_delta,
+    analyze_deposit, compound_fee_plan, format_amount, format_price, is_wsol, parse_ui_amount,
+    pool_has_wsol, range_deposit_side,
 };
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -1993,6 +1993,229 @@ impl ManageDepositWizard {
     }
 }
 
+// ── manage · withdraw / claim+withdraw (% of L) ──────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawKind {
+    /// Liquidity only · fees stay unclaimed.
+    Withdraw,
+    /// Claim fees+rewards then decrease L.
+    ClaimWithdraw,
+}
+
+impl WithdrawKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Withdraw => "withdraw",
+            Self::ClaimWithdraw => "claim + withdraw",
+        }
+    }
+}
+
+pub const WITHDRAW_PCT_PRESETS: [u16; 4] = [25, 50, 75, 100];
+
+/// Type % of position liquidity (e.g. `34.5`) or ↑↓ presets; preview token amounts.
+#[derive(Debug)]
+pub struct ManageWithdrawWizard {
+    pub kind: WithdrawKind,
+    /// Typed percent · empty falls back to last preset.
+    pub pct_input: String,
+    /// Last ↑↓ preset index (also default when input empty).
+    pub pct_choice: usize,
+    pub error: Option<String>,
+    pub symbol_a: String,
+    pub symbol_b: String,
+    pub decimals_a: u8,
+    pub decimals_b: u8,
+    pub fee_a: u64,
+    pub fee_b: u64,
+    pub position_liquidity: u128,
+    /// Full position inventory (UI baseline).
+    pub amount_a: u128,
+    pub amount_b: u128,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub sqrt_price: u128,
+}
+
+impl ManageWithdrawWizard {
+    pub fn from_detail(detail: &sol_clmm_manager::PositionDetail, kind: WithdrawKind) -> Self {
+        Self {
+            kind,
+            pct_input: "100".into(),
+            pct_choice: 3,
+            error: None,
+            symbol_a: Self::display_symbol(&detail.token_a.symbol, &detail.token_a.mint),
+            symbol_b: Self::display_symbol(&detail.token_b.symbol, &detail.token_b.mint),
+            decimals_a: detail.token_a.decimals,
+            decimals_b: detail.token_b.decimals,
+            fee_a: detail.fee_a,
+            fee_b: detail.fee_b,
+            position_liquidity: detail.position_liquidity,
+            amount_a: detail.amount_a,
+            amount_b: detail.amount_b,
+            tick_lower: detail.row.tick_lower,
+            tick_upper: detail.row.tick_upper,
+            sqrt_price: detail.pool.sqrt_price,
+        }
+    }
+
+    fn display_symbol(symbol: &str, mint: &Pubkey) -> String {
+        if is_wsol(mint) {
+            "SOL".into()
+        } else {
+            symbol.to_string()
+        }
+    }
+
+    /// Parsed percent in \[0, 100\] (supports `34.5`).
+    pub fn pct_f64(&self) -> Result<f64, String> {
+        let raw = self.pct_input.trim().replace(',', ".");
+        if raw.is_empty() {
+            return Ok(f64::from(
+                WITHDRAW_PCT_PRESETS[self.pct_choice.min(WITHDRAW_PCT_PRESETS.len() - 1)],
+            ));
+        }
+        let v: f64 = raw
+            .parse()
+            .map_err(|_| format!("invalid % · type e.g. 34.5"))?;
+        if !(0.0..=100.0).contains(&v) {
+            return Err("% must be 0…100".into());
+        }
+        Ok(v)
+    }
+
+    /// Basis points 0..=10_000 (rounded from typed %).
+    pub fn bps(&self) -> Result<u16, String> {
+        let pct = self.pct_f64()?;
+        let bps = (pct * 100.0).round().clamp(0.0, 10_000.0) as u16;
+        Ok(bps)
+    }
+
+    pub fn liquidity_delta(&self) -> Result<u128, String> {
+        let bps = u128::from(self.bps()?);
+        Ok(self.position_liquidity.saturating_mul(bps) / 10_000)
+    }
+
+    /// Estimated tokens returned for the selected %.
+    pub fn preview_amounts(&self) -> Result<(u128, u128), String> {
+        let liq = self.liquidity_delta()?;
+        if liq == 0 {
+            return Ok((0, 0));
+        }
+        if self.sqrt_price > 0 {
+            Ok(amounts_for_liquidity_delta(
+                liq,
+                self.sqrt_price,
+                self.tick_lower,
+                self.tick_upper,
+            ))
+        } else {
+            let bps = u128::from(self.bps()?);
+            Ok((
+                self.amount_a.saturating_mul(bps) / 10_000,
+                self.amount_b.saturating_mul(bps) / 10_000,
+            ))
+        }
+    }
+
+    pub fn status_hint(&self) -> String {
+        format!(
+            "{} · type % (e.g. 34.5) · ↑↓ presets · Enter · Esc",
+            self.kind.title()
+        )
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(err) = &self.error {
+            out.push(format!("! {err}"));
+        }
+        out.push(format!(
+            "{} · {} / {} · L={}",
+            self.kind.title(),
+            self.symbol_a,
+            self.symbol_b,
+            self.position_liquidity
+        ));
+        out.push(format!(
+            "position · {} {} · {} {}",
+            format_amount(self.amount_a, self.decimals_a),
+            self.symbol_a,
+            format_amount(self.amount_b, self.decimals_b),
+            self.symbol_b,
+        ));
+        if matches!(self.kind, WithdrawKind::ClaimWithdraw) {
+            out.push(format!(
+                "claimable · {} {} · {} {}",
+                format_amount(u128::from(self.fee_a), self.decimals_a),
+                self.symbol_a,
+                format_amount(u128::from(self.fee_b), self.decimals_b),
+                self.symbol_b,
+            ));
+        }
+        out.push(String::new());
+        out.push("% of liquidity (type or ↑↓ 25/50/75/100)".into());
+        out.push(format!("▸▸{}", self.pct_input));
+        out.push(format!(
+            "   presets · {}",
+            WITHDRAW_PCT_PRESETS
+                .iter()
+                .map(|p| format!("{p}%"))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ));
+        out.push(String::new());
+        match (self.pct_f64(), self.preview_amounts(), self.liquidity_delta()) {
+            (Ok(pct), Ok((pa, pb)), Ok(liq)) => {
+                out.push(format!(
+                    "≈ receive · {} {} · {} {} · {pct}% · ΔL={liq}",
+                    format_amount(pa, self.decimals_a),
+                    self.symbol_a,
+                    format_amount(pb, self.decimals_b),
+                    self.symbol_b,
+                ));
+            }
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                out.push(format!("≈ receive · ({e})"));
+            }
+        }
+        if matches!(self.kind, WithdrawKind::ClaimWithdraw) && (self.fee_a > 0 || self.fee_b > 0)
+        {
+            out.push("(+ fees claimed into wallet in the same tx)".into());
+        }
+        out
+    }
+
+    pub fn select_next(&mut self) {
+        self.pct_choice = (self.pct_choice + 1) % WITHDRAW_PCT_PRESETS.len();
+        self.pct_input = WITHDRAW_PCT_PRESETS[self.pct_choice].to_string();
+        self.error = None;
+    }
+
+    pub fn select_prev(&mut self) {
+        self.pct_choice = if self.pct_choice == 0 {
+            WITHDRAW_PCT_PRESETS.len() - 1
+        } else {
+            self.pct_choice - 1
+        };
+        self.pct_input = WITHDRAW_PCT_PRESETS[self.pct_choice].to_string();
+        self.error = None;
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        if c.is_ascii_digit() || c == '.' || c == ',' {
+            self.pct_input.push(c);
+            self.error = None;
+        }
+    }
+
+    pub fn input_backspace(&mut self) {
+        self.pct_input.pop();
+        self.error = None;
+    }
+}
+
 // ── manage · compound (claim → deposit) ──────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2395,6 +2618,12 @@ pub struct WriteConfirm {
     pub position_pk: Option<String>,
     pub pool_pk: Option<String>,
     pub pool_label: Option<String>,
+    pub mint_a: Option<String>,
+    pub mint_b: Option<String>,
+    pub symbol_a: Option<String>,
+    pub symbol_b: Option<String>,
+    pub decimals_a: Option<u8>,
+    pub decimals_b: Option<u8>,
     /// Wallet balances re-fetched after a successful send.
     pub wallet_balances: Option<WalletPoolBalances>,
 }
@@ -2426,8 +2655,49 @@ impl WriteConfirm {
             position_pk: None,
             pool_pk: None,
             pool_label: None,
+            mint_a: None,
+            mint_b: None,
+            symbol_a: None,
+            symbol_b: None,
+            decimals_a: None,
+            decimals_b: None,
             wallet_balances: None,
         }
+    }
+
+    /// Attach position + pool identity for sqlite history.
+    pub fn attach_pool_context(
+        &mut self,
+        position: Option<&str>,
+        pool: Option<&str>,
+        symbol_a: &str,
+        symbol_b: &str,
+        mint_a: &solana_pubkey::Pubkey,
+        mint_b: &solana_pubkey::Pubkey,
+        decimals_a: u8,
+        decimals_b: u8,
+    ) {
+        self.position_pk = position.map(|s| s.to_string());
+        self.pool_pk = pool.map(|s| s.to_string());
+        self.pool_label = Some(format!("{symbol_a} / {symbol_b}"));
+        self.symbol_a = Some(symbol_a.to_string());
+        self.symbol_b = Some(symbol_b.to_string());
+        self.mint_a = Some(mint_a.to_string());
+        self.mint_b = Some(mint_b.to_string());
+        self.decimals_a = Some(decimals_a);
+        self.decimals_b = Some(decimals_b);
+    }
+
+    pub fn pool_meta(&self) -> Option<sol_clmm_manager::WritePoolMeta> {
+        Some(sol_clmm_manager::WritePoolMeta {
+            pool_label: self.pool_label.clone()?,
+            mint_a: self.mint_a.clone()?,
+            mint_b: self.mint_b.clone()?,
+            symbol_a: self.symbol_a.clone()?,
+            symbol_b: self.symbol_b.clone()?,
+            decimals_a: self.decimals_a?,
+            decimals_b: self.decimals_b?,
+        })
     }
 
     pub fn set_error(&mut self, err: String) {

@@ -48,6 +48,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::ManageCompound => draw_manage_compound(frame, app),
         #[cfg(not(feature = "write"))]
         Screen::ManageCompound => draw_detail(frame, app),
+        #[cfg(feature = "write")]
+        Screen::ManageWithdraw => draw_manage_withdraw(frame, app),
+        #[cfg(not(feature = "write"))]
+        Screen::ManageWithdraw => draw_detail(frame, app),
         Screen::CreatePosition => draw_create_position(frame, app),
         Screen::WriteConfirm => draw_write_confirm(frame, app),
     }
@@ -359,6 +363,28 @@ fn draw_manage_compound(frame: &mut Frame, app: &mut App) {
         Paragraph::new(lines).block(panel("compound · claim → deposit", false)),
         chunks[0],
     );
+    draw_footer(frame, app, chunks[1]);
+}
+
+#[cfg(feature = "write")]
+fn draw_manage_withdraw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+        .split(area);
+
+    let title = app
+        .manage_withdraw
+        .as_ref()
+        .map(|w| format!("{} · % of liquidity", w.kind.title()))
+        .unwrap_or_else(|| "withdraw".into());
+    let lines = app
+        .manage_withdraw
+        .as_ref()
+        .map(|w| style_wizard_lines(w.lines()))
+        .unwrap_or_else(|| vec![Line::from("no withdraw wizard")]);
+    frame.render_widget(Paragraph::new(lines).block(panel(&title, false)), chunks[0]);
     draw_footer(frame, app, chunks[1]);
 }
 
@@ -1216,7 +1242,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  y            write history (sqlite write_txs · landed manage / create)",
+        "  y            write history (all writes from list · this position from detail)",
     );
     push(
         &mut out,
@@ -1235,6 +1261,11 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
         &mut out,
         HelpStyle::Key,
         "  r            refresh this position (fees, rewards, chart, snapshot)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  y            history for this position only",
     );
     push(
         &mut out,
@@ -2215,22 +2246,39 @@ fn draw_positions(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    let scoped = matches!(
+        app.history_filter,
+        crate::app::HistoryFilter::Position { .. }
+    );
+    // Always same columns so widths type-check; scoped hides pool as "·".
+    // Δ is Length · note is Min → note starts right after Δ (not pushed far right).
     let header = Row::new([
         Cell::from("when"),
         Cell::from("op"),
-        Cell::from("venue"),
+        Cell::from(if scoped { "·" } else { "pool" }),
         Cell::from("Δ"),
         Cell::from("note"),
     ])
     .style(theme::table_header());
 
+    let widths = [
+        Constraint::Length(16),
+        Constraint::Length(10),
+        Constraint::Length(if scoped { 1 } else { 12 }),
+        Constraint::Length(24),
+        Constraint::Min(24),
+    ];
+
+    let empty_hint = if scoped {
+        "no writes for this position yet"
+    } else {
+        "no writes yet · land a manage/create tx first"
+    };
+
     let rows: Vec<Row> = if app.history.is_empty() {
         vec![Row::new([
             Cell::from(Span::styled("—", theme::dim())),
-            Cell::from(Span::styled(
-                "no writes yet · land a manage/create tx first",
-                theme::muted(),
-            )),
+            Cell::from(Span::styled(empty_hint, theme::muted())),
             Cell::from("—"),
             Cell::from("—"),
             Cell::from("—"),
@@ -2239,23 +2287,22 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         app.history
             .iter()
             .map(|r| {
-                let deltas = r.deltas_label();
+                let deltas = truncate_history_note(&r.deltas_label(), 24);
                 let note = r
                     .summary
                     .as_deref()
                     .or(r.paid_label.as_deref())
                     .unwrap_or("—");
-                // Keep note short so it sits next to Δ (not shoved to the far right).
-                let note = truncate_history_note(note, 36);
+                let note = truncate_history_note(note, 96);
+                let pool = if scoped {
+                    "·".into()
+                } else {
+                    r.pair_label()
+                };
                 Row::new([
                     Cell::from(r.time_label()),
                     Cell::from(Span::styled(r.op.clone(), theme::accent_text())),
-                    Cell::from(
-                        r.venue
-                            .as_deref()
-                            .unwrap_or("—")
-                            .to_string(),
-                    ),
+                    Cell::from(Span::styled(pool, theme::body())),
                     Cell::from(Span::styled(deltas, theme::ok())),
                     Cell::from(Span::styled(note, theme::muted())),
                 ])
@@ -2264,18 +2311,16 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
             .collect()
     };
 
-    let widths = [
-        Constraint::Length(11),
-        Constraint::Length(10),
-        Constraint::Length(8),
-        Constraint::Min(22),
-        Constraint::Length(36),
-    ];
-
-    let title = format!(
-        "history · {} writes · Enter/p sig+Δ · r reload · Esc positions",
-        app.history.len()
-    );
+    let title = match &app.history_filter {
+        crate::app::HistoryFilter::All => format!(
+            "history · all · {} · Enter/p sig · r reload · Esc list",
+            app.history.len()
+        ),
+        crate::app::HistoryFilter::Position { label, .. } => format!(
+            "history · {label} · {} · Enter/p sig · r reload · Esc detail",
+            app.history.len()
+        ),
+    };
     let table = Table::new(rows, widths)
         .header(header)
         .block(panel(&title, false))

@@ -117,9 +117,9 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
    - **Rewards ≠ pool mints** — when claimed rewards are a third token (not A/B), offer **swap reward → A and/or B** then include in the compound deposit (opt-in; skip / leave in wallet otherwise).
 2. **Rebalance / move position (P1 · final boss)** — when out of range (or user wants a new band): claim → withdraw/close → (swap if needed) → open a new in-range (or target) position in one managed flow. Same helper contract may own the atomic path. TUI: manage → rebalance wizard.
 3. **History / accounting (P2)** — minimal durable ledger (sig is enough to re-fetch chain data anytime):
-   - **TUI list** — live (`y`): op · venue · native SOL Δ · pool mint ATA Δ · summary; Enter/`p` = full sig + Δ.
-   - **Inputs from us** — what we planned (amounts / shape / tip from the confirm plan) — still thin.
-   - **Balance changes** — SOL + token ATA before→after on land (older rows may lack token Δ).
+   - **TUI** — `y` on positions = all writes; `y` on detail = that position only. Columns: when · op · pool · Δ · note.
+   - **Stored** — sig · op · venue · position · pool · pool_label/symbols · SOL Δ · token ATA Δ · summary.
+   - **Still thin** — structured plan inputs (exact amounts/shape) for richer notes.
 
 ### TODO — later
 

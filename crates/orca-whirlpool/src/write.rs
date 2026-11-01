@@ -474,15 +474,16 @@ pub fn plan_withdraw(
     })
 }
 
-/// Claim fees+rewards + withdraw all liquidity — position account stays open.
+/// Claim fees+rewards + withdraw liquidity — position account stays open.
 pub fn plan_claim_and_withdraw(
     authority: Pubkey,
     detail: &PositionDetail,
+    liquidity_delta: u128,
     sol_leg: SolLegMode,
 ) -> Result<WritePlan> {
     let mint = require_mint(detail)?;
     let mut ixs = claim_ixs(authority, detail, mint);
-    let liq = detail.position_liquidity;
+    let liq = liquidity_delta.min(detail.position_liquidity);
     if liq > 0 {
         ixs.push(decrease_liquidity_ix(
             liquidity_metas_from_detail(authority, detail, mint),
@@ -497,12 +498,16 @@ pub fn plan_claim_and_withdraw(
         &detail.token_a.mint,
         &detail.token_b.mint,
     ));
+    let pct = if detail.position_liquidity > 0 {
+        (liq.saturating_mul(100) / detail.position_liquidity).min(100)
+    } else {
+        0
+    };
     Ok(WritePlan {
         op: WriteOp::ClaimAndWithdraw,
         venue_label: "orca whirlpool".into(),
         summary: format!(
-            "claim + withdraw all · L={} · keep position · sol={}",
-            detail.position_liquidity,
+            "claim + withdraw {pct}% · ΔL={liq} · keep position · sol={}",
             sol_leg.label()
         ),
         instructions: ixs,
@@ -510,7 +515,9 @@ pub fn plan_claim_and_withdraw(
         expected: ExpectedDeltas {
             fee_a: detail.fee_a,
             fee_b: detail.fee_b,
-            note: "collect_fees(+rewards) → decrease_liquidity(all) · position stays".into(),
+            note: format!(
+                "collect_fees(+rewards) → decrease_liquidity({pct}%) · position stays"
+            ),
             ..Default::default()
         },
         payer: authority,

@@ -485,7 +485,8 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
         | Screen::Manage
         | Screen::ManageDeposit
         | Screen::ManageWrap
-        | Screen::ManageCompound => {
+        | Screen::ManageCompound
+        | Screen::ManageWithdraw => {
             if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                 app.screen = Screen::Positions;
                 app.status_line = app.positions_status_line();
@@ -541,6 +542,9 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             #[cfg(feature = "write")]
             KeyCode::Char('m') if !app.detail_loading => {
                 app.open_manage();
+            }
+            KeyCode::Char('y') if !app.detail_loading && !app.is_busy() => {
+                app.open_position_history();
             }
             _ => {}
         },
@@ -646,6 +650,43 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
                 _ => {}
             }
         }
+        #[cfg(feature = "write")]
+        Screen::ManageWithdraw => match code {
+            KeyCode::Esc => app.manage_withdraw_back(),
+            KeyCode::Enter => app.manage_withdraw_submit(),
+            KeyCode::Down => {
+                if let Some(w) = app.manage_withdraw.as_mut() {
+                    w.select_next();
+                    app.status_line = w.status_hint();
+                }
+            }
+            KeyCode::Up => {
+                if let Some(w) = app.manage_withdraw.as_mut() {
+                    w.select_prev();
+                    app.status_line = w.status_hint();
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(w) = app.manage_withdraw.as_mut() {
+                    w.input_backspace();
+                    app.status_line = w.status_hint();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(w) = app.manage_withdraw.as_mut() {
+                    // j/k are typing digits elsewhere; here digits/. go to % field.
+                    if c == 'j' {
+                        w.select_next();
+                    } else if c == 'k' {
+                        w.select_prev();
+                    } else {
+                        w.input_char(c);
+                    }
+                    app.status_line = w.status_hint();
+                }
+            }
+            _ => {}
+        },
         Screen::Help => match code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('h') => {
                 app.close_help();

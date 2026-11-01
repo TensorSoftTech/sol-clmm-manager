@@ -8,6 +8,18 @@ use sol_clmm_manager::store::{
 use sol_clmm_manager::{
     PositionDetail, PositionRow, PriceApiKeys, PriceMode, VenueFilter, WriteTxRow,
 };
+
+/// General write history vs one position's txs.
+#[derive(Debug, Clone, Default)]
+pub enum HistoryFilter {
+    #[default]
+    All,
+    Position {
+        address: String,
+        /// Short pair label for the status/title.
+        label: String,
+    },
+}
 use solana_keypair::{Signer, read_keypair_file};
 use solana_pubkey::Pubkey;
 use std::path::PathBuf;
@@ -40,6 +52,9 @@ pub enum Screen {
     /// Claim fees → redeposit (compound).
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     ManageCompound,
+    /// Withdraw / claim+withdraw · % of L.
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    ManageWithdraw,
     /// Create position wizard (`n`) — works with an empty position list.
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     CreatePosition,
@@ -103,8 +118,8 @@ impl ManageChoice {
             Self::WrapSol => "native SOL → WSOL ATA · standalone",
             Self::UnwrapSol => "close WSOL ATA → native SOL · standalone",
             Self::Close => "claim fees → withdraw all → unwrap SOL → close account (1 tx)",
-            Self::ClaimWithdraw => "claim fees → withdraw all · unwrap SOL · keep NFT",
-            Self::Withdraw => "remove all liquidity · unwrap SOL · fees stay unclaimed",
+            Self::ClaimWithdraw => "claim fees → withdraw % of L · unwrap SOL · keep NFT",
+            Self::Withdraw => "withdraw % of liquidity · unwrap SOL · fees stay unclaimed",
             Self::Claim => "collect fees + rewards only · liquidity stays",
         }
     }
@@ -481,6 +496,9 @@ pub struct App {
     /// Write history from SQLite (`write_txs` · newest first).
     pub history: Vec<WriteTxRow>,
     pub history_table_state: TableState,
+    pub history_filter: HistoryFilter,
+    /// Screen to restore when leaving history (positions list or detail).
+    pub history_return: Screen,
     pub status: Option<RpcStatus>,
     pub status_line: String,
     pub should_quit: bool,
@@ -514,6 +532,8 @@ pub struct App {
     pub manage_wrap: Option<crate::write_flow::ManageWrapWizard>,
     #[cfg(feature = "write")]
     pub manage_compound: Option<crate::write_flow::ManageCompoundWizard>,
+    #[cfg(feature = "write")]
+    pub manage_withdraw: Option<crate::write_flow::ManageWithdrawWizard>,
     #[cfg(feature = "write")]
     pub write_confirm: Option<crate::write_flow::WriteConfirm>,
     /// Manage menu selection index (`m` on detail).
@@ -568,6 +588,8 @@ impl App {
             table_state: TableState::default(),
             history: Vec::new(),
             history_table_state: TableState::default(),
+            history_filter: HistoryFilter::All,
+            history_return: Screen::Positions,
             status: None,
             status_line: String::new(),
             should_quit: false,
@@ -593,6 +615,8 @@ impl App {
             manage_wrap: None,
             #[cfg(feature = "write")]
             manage_compound: None,
+            #[cfg(feature = "write")]
+            manage_withdraw: None,
             #[cfg(feature = "write")]
             write_confirm: None,
             #[cfg(feature = "write")]
@@ -910,11 +934,37 @@ impl App {
         )
     }
 
+    /// General history from the positions list (`y`).
     pub fn open_history(&mut self) {
         if self.is_busy() {
             return;
         }
         self.dismiss_links_overlay();
+        self.history_filter = HistoryFilter::All;
+        self.history_return = Screen::Positions;
+        self.reload_history();
+        self.screen = Screen::History;
+        self.status_line = self.history_status_line();
+    }
+
+    /// Position-scoped history from detail (`y`).
+    pub fn open_position_history(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        let (address, label) = match self.detail.as_ref() {
+            Some(d) => (
+                d.row.address.to_string(),
+                format!("{} / {}", d.token_a.symbol, d.token_b.symbol),
+            ),
+            None => {
+                self.status_line = "no detail loaded".into();
+                return;
+            }
+        };
+        self.dismiss_links_overlay();
+        self.history_filter = HistoryFilter::Position { address, label };
+        self.history_return = Screen::Detail;
         self.reload_history();
         self.screen = Screen::History;
         self.status_line = self.history_status_line();
@@ -922,13 +972,29 @@ impl App {
 
     pub fn close_history(&mut self) {
         self.dismiss_links_overlay();
-        self.screen = Screen::Positions;
-        self.status_line = self.positions_status_line();
+        let back = self.history_return;
+        self.screen = back;
+        self.status_line = match back {
+            Screen::Detail => {
+                if self.writes_live() {
+                    "detail · m manage · y history · p pubkey · r refresh · Esc".into()
+                } else {
+                    "detail · y history · p pubkey · r refresh · Esc".into()
+                }
+            }
+            _ => self.positions_status_line(),
+        };
     }
 
     pub fn reload_history(&mut self) {
+        let filter = match &self.history_filter {
+            HistoryFilter::All => None,
+            HistoryFilter::Position { address, .. } => Some(address.clone()),
+        };
         let rows = match self.store.as_ref() {
-            Some(store) => store.list_write_txs(500).unwrap_or_default(),
+            Some(store) => store
+                .list_write_txs(500, filter.as_deref())
+                .unwrap_or_default(),
             None => Vec::new(),
         };
         let n = rows.len();
@@ -943,9 +1009,14 @@ impl App {
 
     pub fn history_status_line(&self) -> String {
         let n = self.history.len();
-        format!(
-            "history · {n} writes · ↑↓ · Enter / p sig · r reload · Esc positions · ? help · q"
-        )
+        match &self.history_filter {
+            HistoryFilter::All => format!(
+                "history · all · {n} writes · ↑↓ · Enter/p sig · r reload · Esc list · ?"
+            ),
+            HistoryFilter::Position { label, .. } => format!(
+                "history · {label} · {n} writes · ↑↓ · Enter/p sig · r reload · Esc detail · ?"
+            ),
+        }
     }
 
     pub fn selected_history_row(&self) -> Option<&WriteTxRow> {
@@ -1012,6 +1083,7 @@ impl App {
                 | Screen::ManageDeposit
                 | Screen::ManageWrap
                 | Screen::ManageCompound
+                | Screen::ManageWithdraw
                 | Screen::CreatePosition
                 | Screen::WriteConfirm
                 | Screen::Help
@@ -1032,9 +1104,9 @@ impl App {
         self.status_line = match back {
             Screen::Detail => {
                 if self.writes_live() {
-                    "detail · m manage · p pubkey · r refresh · Esc".into()
+                    "detail · m manage · y history · p pubkey · r refresh · Esc".into()
                 } else {
-                    "detail · p pubkey · r refresh · ? help · Esc back".into()
+                    "detail · y history · p pubkey · r refresh · Esc".into()
                 }
             }
             Screen::Manage => "manage · ↑↓ · Enter · Esc · p pubkey".into(),
@@ -1075,6 +1147,19 @@ impl App {
                 #[cfg(not(feature = "write"))]
                 {
                     "compound".into()
+                }
+            }
+            Screen::ManageWithdraw => {
+                #[cfg(feature = "write")]
+                {
+                    self.manage_withdraw
+                        .as_ref()
+                        .map(|w| w.status_hint())
+                        .unwrap_or_else(|| "withdraw".into())
+                }
+                #[cfg(not(feature = "write"))]
+                {
+                    "withdraw".into()
                 }
             }
             Screen::History => self.history_status_line(),
@@ -1702,9 +1787,9 @@ impl App {
                         self.detail = Some(d);
                         self.detail_error = None;
                         self.status_line = if self.writes_live() {
-                            "detail · full chart · + zoom in · 0 fit · m · Esc".into()
+                            "detail · full chart · + zoom · m manage · y history · Esc".into()
                         } else {
-                            "detail · full chart · + zoom in · 0 fit · r · Esc".into()
+                            "detail · full chart · + zoom · y history · r · Esc".into()
                         };
                     }
                     Err(e) => {
@@ -1744,6 +1829,7 @@ impl App {
                             .unwrap_or("tx");
                         if let Some(store) = &self.store {
                             let c = self.write_confirm.as_ref();
+                            let pool_meta = c.and_then(|x| x.pool_meta());
                             let _ = store.record_write_tx(
                                 &out.signature,
                                 op,
@@ -1755,6 +1841,7 @@ impl App {
                                 out.sol_spent_lamports,
                                 c.map(|x| x.plan.summary.as_str()),
                                 Some(paid.as_str()),
+                                pool_meta.as_ref(),
                                 token_delta.as_ref(),
                             );
                         }
@@ -2315,9 +2402,9 @@ impl App {
     pub fn manage_close(&mut self) {
         self.screen = Screen::Detail;
         self.status_line = if self.writes_live() {
-            "detail · m manage · p pubkey · r refresh · Esc".into()
+            "detail · m manage · y history · p pubkey · r refresh · Esc".into()
         } else {
-            "detail · Esc back".into()
+            "detail · y history · Esc back".into()
         };
     }
 
@@ -2343,6 +2430,12 @@ impl App {
         match choice {
             ManageChoice::Deposit => self.open_manage_deposit(rpc),
             ManageChoice::Compound => self.open_manage_compound(),
+            ManageChoice::Withdraw => self.open_manage_withdraw(
+                crate::write_flow::WithdrawKind::Withdraw,
+            ),
+            ManageChoice::ClaimWithdraw => self.open_manage_withdraw(
+                crate::write_flow::WithdrawKind::ClaimWithdraw,
+            ),
             ManageChoice::WrapSol => self.open_manage_wrap(rpc),
             ManageChoice::UnwrapSol => self.detail_write_op(rpc, choice),
             other => self.detail_write_op(rpc, other),
@@ -2433,6 +2526,123 @@ impl App {
     }
 
     #[cfg(feature = "write")]
+    fn open_manage_withdraw(&mut self, kind: crate::write_flow::WithdrawKind) {
+        let Some(detail) = self.detail.as_ref() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        if detail.position_liquidity == 0
+            && matches!(kind, crate::write_flow::WithdrawKind::Withdraw)
+        {
+            self.status_line = "no liquidity to withdraw".into();
+            return;
+        }
+        if detail.position_liquidity == 0
+            && matches!(kind, crate::write_flow::WithdrawKind::ClaimWithdraw)
+            && detail.fee_a == 0
+            && detail.fee_b == 0
+        {
+            self.status_line = "nothing to claim or withdraw".into();
+            return;
+        }
+        let wiz = crate::write_flow::ManageWithdrawWizard::from_detail(detail, kind);
+        self.status_line = wiz.status_hint();
+        self.manage_withdraw = Some(wiz);
+        self.screen = Screen::ManageWithdraw;
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_withdraw_back(&mut self) {
+        self.manage_withdraw = None;
+        self.screen = Screen::Manage;
+        self.status_line = "manage · ↑↓ · Enter · Esc · p pubkey".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_withdraw_submit(&mut self) {
+        let Some(detail) = self.detail.clone() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        let Some(wiz) = self.manage_withdraw.as_ref() else {
+            return;
+        };
+        let kind = wiz.kind;
+        let liq = match wiz.liquidity_delta() {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(w) = self.manage_withdraw.as_mut() {
+                    w.error = Some(e);
+                }
+                return;
+            }
+        };
+        if matches!(kind, crate::write_flow::WithdrawKind::Withdraw) && liq == 0 {
+            if let Some(w) = self.manage_withdraw.as_mut() {
+                w.error = Some("liquidity to withdraw is 0".into());
+            }
+            return;
+        }
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let client = Client::new(self.price_mode, self.price_keys());
+        let sol_leg = if sol_clmm_manager::pool_has_wsol(
+            &detail.token_a.mint,
+            &detail.token_b.mint,
+        ) {
+            sol_clmm_manager::SolLegMode::NativeSol
+        } else {
+            sol_clmm_manager::SolLegMode::Wsol
+        };
+        let plan = match kind {
+            crate::write_flow::WithdrawKind::Withdraw => {
+                client.plan_withdraw(payer.pubkey(), &detail, liq, sol_leg)
+            }
+            crate::write_flow::WithdrawKind::ClaimWithdraw => {
+                client.plan_claim_and_withdraw(payer.pubkey(), &detail, liq, sol_leg)
+            }
+        };
+        let plan = match plan {
+            Ok(p) => p,
+            Err(e) => {
+                if let Some(w) = self.manage_withdraw.as_mut() {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("{} plan failed · {e}", kind.title());
+                return;
+            }
+        };
+        if plan.instructions.is_empty() {
+            self.status_line = format!("{}: no instructions", kind.title());
+            return;
+        }
+        let mut confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        Self::attach_confirm_from_detail(&mut confirm, &detail);
+        self.manage_withdraw = None;
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.screen = Screen::WriteConfirm;
+        self.status_line = format!(
+            "{} · ↑↓ priority fee · Enter simulate",
+            kind.title()
+        );
+    }
+
+    #[cfg(feature = "write")]
     pub fn manage_compound_back(&mut self) {
         let leave = self
             .manage_compound
@@ -2517,12 +2727,7 @@ impl App {
         }
         let mut confirm =
             crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, router_tip);
-        confirm.position_pk = Some(detail.row.address.to_string());
-        confirm.pool_pk = Some(detail.pool.address.to_string());
-        confirm.pool_label = Some(format!(
-            "{} / {}",
-            detail.token_a.symbol, detail.token_b.symbol
-        ));
+        Self::attach_confirm_from_detail(&mut confirm, &detail);
         self.manage_compound = None;
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
@@ -2568,9 +2773,7 @@ impl App {
         let mut confirm =
             crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
         if let Some(d) = &self.detail {
-            confirm.position_pk = Some(d.row.address.to_string());
-            confirm.pool_pk = Some(d.pool.address.to_string());
-            confirm.pool_label = Some(format!("{} / {}", d.token_a.symbol, d.token_b.symbol));
+            Self::attach_confirm_from_detail(&mut confirm, d);
         }
         self.manage_wrap = None;
         self.confirm_scroll = 0;
@@ -2686,12 +2889,7 @@ impl App {
         }
         let mut confirm =
             crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, router_tip);
-        confirm.position_pk = Some(detail.row.address.to_string());
-        confirm.pool_pk = Some(detail.pool.address.to_string());
-        confirm.pool_label = Some(format!(
-            "{} / {}",
-            detail.token_a.symbol, detail.token_b.symbol
-        ));
+        Self::attach_confirm_from_detail(&mut confirm, &detail);
         self.manage_deposit = None;
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
@@ -2736,22 +2934,15 @@ impl App {
             sol_clmm_manager::SolLegMode::Wsol
         };
         let plan = match kind {
-            ManageChoice::Deposit | ManageChoice::WrapSol | ManageChoice::Compound => {
+            ManageChoice::Deposit
+            | ManageChoice::WrapSol
+            | ManageChoice::Compound
+            | ManageChoice::Withdraw
+            | ManageChoice::ClaimWithdraw => {
                 unreachable!("opens wizard");
             }
             ManageChoice::UnwrapSol => Ok(sol_clmm_manager::plan_unwrap_sol(authority)),
             ManageChoice::Claim => client.plan_claim(authority, &detail),
-            ManageChoice::Withdraw => {
-                let liq = detail.position_liquidity;
-                if liq == 0 {
-                    Err(anyhow::anyhow!("no liquidity to withdraw"))
-                } else {
-                    client.plan_withdraw(authority, &detail, liq, sol_leg)
-                }
-            }
-            ManageChoice::ClaimWithdraw => {
-                client.plan_claim_and_withdraw(authority, &detail, sol_leg)
-            }
             ManageChoice::Close => client.plan_close_and_claim(authority, &detail, sol_leg),
         };
         let plan = match plan {
@@ -2767,18 +2958,30 @@ impl App {
         }
         let mut confirm =
             crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
-        confirm.position_pk = Some(detail.row.address.to_string());
-        confirm.pool_pk = Some(detail.pool.address.to_string());
-        confirm.pool_label = Some(format!(
-            "{} / {}",
-            detail.token_a.symbol, detail.token_b.symbol
-        ));
+        Self::attach_confirm_from_detail(&mut confirm, &detail);
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
         self.screen = Screen::WriteConfirm;
         self.status_line = format!(
             "{} · ↑↓ priority fee · Enter simulate",
             kind.title()
+        );
+    }
+
+    #[cfg(feature = "write")]
+    fn attach_confirm_from_detail(
+        confirm: &mut crate::write_flow::WriteConfirm,
+        detail: &PositionDetail,
+    ) {
+        confirm.attach_pool_context(
+            Some(&detail.row.address.to_string()),
+            Some(&detail.pool.address.to_string()),
+            &detail.token_a.symbol,
+            &detail.token_b.symbol,
+            &detail.token_a.mint,
+            &detail.token_b.mint,
+            detail.token_a.decimals,
+            detail.token_b.decimals,
         );
     }
 
@@ -2827,12 +3030,26 @@ impl App {
             &settings,
         ) {
             Ok((plan, router_tip)) => {
-                let confirm = crate::write_flow::WriteConfirm::with_tip(
+                let mut confirm = crate::write_flow::WriteConfirm::with_tip(
                     plan,
                     vec![mint],
                     tip,
                     router_tip,
                 );
+                if let Some(w) = self.create.as_ref()
+                    && let Some(p) = w.preview.as_ref()
+                {
+                    confirm.attach_pool_context(
+                        None,
+                        Some(&p.pool.address.to_string()),
+                        &p.token_a.symbol,
+                        &p.token_b.symbol,
+                        &p.token_a.mint,
+                        &p.token_b.mint,
+                        p.token_a.decimals,
+                        p.token_b.decimals,
+                    );
+                }
                 let _ = (rpc, payer, settings); // tip first · Enter simulates
                 self.create = None;
                 self.confirm_scroll = 0;
