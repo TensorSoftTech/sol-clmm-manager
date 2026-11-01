@@ -18,10 +18,10 @@ pub mod dlmm_strategy;
 
 pub use dlmm_strategy::{BinWeights, DlmmStrategy, distribute_bins};
 pub use liquidity::{
-    DepositAnalysis, DepositShape, DepositSizing, LiquidityDeltaPlan, RangeDepositSide,
-    SwapToMatchHint, amounts_for_liquidity_delta, analyze_deposit, deposit_ratio_planner,
-    effective_deposit_shape, liquidity_delta_for_open, liquidity_delta_from_amounts,
-    range_deposit_side, swap_to_match_hint,
+    CompoundFeePlan, DepositAnalysis, DepositShape, DepositSizing, LiquidityDeltaPlan,
+    RangeDepositSide, SwapToMatchHint, amounts_for_liquidity_delta, analyze_deposit,
+    compound_fee_plan, deposit_ratio_planner, effective_deposit_shape, liquidity_delta_for_open,
+    liquidity_delta_from_amounts, range_deposit_side, swap_to_match_hint,
 };
 pub use sol_wrap::{
     SolLegMode, associated_token_program_id, create_ata_idempotent_ix, dedupe_ata_create_idempotent,

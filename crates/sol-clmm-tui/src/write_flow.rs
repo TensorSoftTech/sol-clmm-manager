@@ -3,7 +3,8 @@
 use sol_clmm_manager::{
     CreatePositionParams, DepositAnalysis, DepositShape, DepositSizing, DlmmStrategy, PoolPreview,
     RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan, analyze_deposit,
-    format_amount, format_price, is_wsol, parse_ui_amount, pool_has_wsol, range_deposit_side,
+    compound_fee_plan, format_amount, format_price, is_wsol, parse_ui_amount, pool_has_wsol,
+    range_deposit_side,
 };
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -1989,6 +1990,262 @@ impl ManageDepositWizard {
             return Err("need amount A and/or B".into());
         }
         Ok((a, b))
+    }
+}
+
+// ── manage · compound (claim → deposit) ──────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageCompoundStep {
+    /// No-swap (limiting ratio) · with-swap (residual → Jupiter).
+    Mode,
+    /// Slippage when with-swap.
+    SwapSlippage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageCompoundAdvance {
+    Continue,
+    Ready,
+}
+
+/// Claim fees → redeposit into the same position.
+#[derive(Debug)]
+pub struct ManageCompoundWizard {
+    pub step: ManageCompoundStep,
+    /// 0 = no-swap · 1 = with-swap
+    pub choice: usize,
+    pub with_swap: bool,
+    pub swap_slippage_choice: usize,
+    pub swap_router: String,
+    pub error: Option<String>,
+    pub symbol_a: String,
+    pub symbol_b: String,
+    pub decimals_a: u8,
+    pub decimals_b: u8,
+    pub fee_a: u64,
+    pub fee_b: u64,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub tick_current: i32,
+    pub sqrt_price: u128,
+}
+
+impl ManageCompoundWizard {
+    pub fn from_detail(detail: &sol_clmm_manager::PositionDetail, swap_router: String) -> Self {
+        Self {
+            step: ManageCompoundStep::Mode,
+            choice: 0,
+            with_swap: false,
+            swap_slippage_choice: 0,
+            swap_router,
+            error: None,
+            symbol_a: Self::display_symbol(&detail.token_a.symbol, &detail.token_a.mint),
+            symbol_b: Self::display_symbol(&detail.token_b.symbol, &detail.token_b.mint),
+            decimals_a: detail.token_a.decimals,
+            decimals_b: detail.token_b.decimals,
+            fee_a: detail.fee_a,
+            fee_b: detail.fee_b,
+            tick_lower: detail.row.tick_lower,
+            tick_upper: detail.row.tick_upper,
+            tick_current: detail.pool.tick_current_index,
+            sqrt_price: detail.pool.sqrt_price,
+        }
+    }
+
+    fn display_symbol(symbol: &str, mint: &Pubkey) -> String {
+        if is_wsol(mint) {
+            "SOL".into()
+        } else {
+            symbol.to_string()
+        }
+    }
+
+    pub fn with_swap(&self) -> bool {
+        self.with_swap
+    }
+
+    pub fn swap_slippage_bps(&self) -> u16 {
+        self.slippage_picks()[self.swap_slippage_choice.min(4)].bps()
+    }
+
+    fn slippage_picks(&self) -> [SlippagePick; 5] {
+        [
+            SlippagePick::Recommended,
+            SlippagePick::Default50,
+            SlippagePick::Fixed(10),
+            SlippagePick::Fixed(100),
+            SlippagePick::Fixed(300),
+        ]
+    }
+
+    fn fee_plan_note(&self) -> String {
+        let p = compound_fee_plan(
+            self.fee_a,
+            self.fee_b,
+            self.sqrt_price,
+            self.tick_lower,
+            self.tick_upper,
+            self.tick_current,
+        );
+        if self.with_swap {
+            format!(
+                "with-swap · full fees {} / {} → Dual + swap-to-match",
+                format_amount(u128::from(self.fee_a), self.decimals_a),
+                format_amount(u128::from(self.fee_b), self.decimals_b),
+            )
+        } else {
+            format!(
+                "no-swap · deposit {} / {} · residual {} / {} · {}",
+                format_amount(u128::from(p.deposit_a), self.decimals_a),
+                format_amount(u128::from(p.deposit_b), self.decimals_b),
+                format_amount(u128::from(p.residual_a), self.decimals_a),
+                format_amount(u128::from(p.residual_b), self.decimals_b),
+                p.note,
+            )
+        }
+    }
+
+    pub fn status_hint(&self) -> String {
+        match self.step {
+            ManageCompoundStep::Mode => {
+                "compound · ↑↓ no-swap / with-swap · Enter · Esc".into()
+            }
+            ManageCompoundStep::SwapSlippage => {
+                format!(
+                    "compound slippage · Tab {} ↔ · ↑↓ · Enter",
+                    if self.swap_router == "jupiter" {
+                        "Jupiter"
+                    } else {
+                        "Titan"
+                    }
+                )
+            }
+        }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(err) = &self.error {
+            out.push(format!("! {err}"));
+        }
+        out.push(format!(
+            "compound · {} / {} · ticks [{}, {}]",
+            self.symbol_a, self.symbol_b, self.tick_lower, self.tick_upper
+        ));
+        out.push(format!(
+            "claimable · {} {} · {} {}",
+            format_amount(u128::from(self.fee_a), self.decimals_a),
+            self.symbol_a,
+            format_amount(u128::from(self.fee_b), self.decimals_b),
+            self.symbol_b,
+        ));
+        out.push(String::new());
+        match self.step {
+            ManageCompoundStep::Mode => {
+                out.push("mode".into());
+                for (i, label) in ["no-swap · limiting fee ratio · residual stays",
+                    "with-swap · residual → Jupiter / Titan then deposit"]
+                    .iter()
+                    .enumerate()
+                {
+                    let mark = if i == self.choice { "▸" } else { " " };
+                    out.push(format!("{mark} {label}"));
+                }
+                out.push(String::new());
+                out.push(self.fee_plan_note());
+            }
+            ManageCompoundStep::SwapSlippage => {
+                out.push(self.fee_plan_note());
+                out.push(String::new());
+                out.push(format!(
+                    "autoswap slippage · router {}",
+                    if self.swap_router == "jupiter" {
+                        "Jupiter"
+                    } else {
+                        "Titan"
+                    }
+                ));
+                for (i, pick) in self.slippage_picks().iter().enumerate() {
+                    let mark = if i == self.swap_slippage_choice {
+                        "▸"
+                    } else {
+                        " "
+                    };
+                    out.push(format!("{mark} {}", pick.label(&self.swap_router)));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn select_next(&mut self) {
+        match self.step {
+            ManageCompoundStep::Mode => {
+                self.choice = (self.choice + 1) % 2;
+                self.with_swap = self.choice == 1;
+            }
+            ManageCompoundStep::SwapSlippage => {
+                self.swap_slippage_choice = (self.swap_slippage_choice + 1) % 5;
+            }
+        }
+        self.error = None;
+    }
+
+    pub fn select_prev(&mut self) {
+        match self.step {
+            ManageCompoundStep::Mode => {
+                self.choice = if self.choice == 0 { 1 } else { self.choice - 1 };
+                self.with_swap = self.choice == 1;
+            }
+            ManageCompoundStep::SwapSlippage => {
+                self.swap_slippage_choice = if self.swap_slippage_choice == 0 {
+                    4
+                } else {
+                    self.swap_slippage_choice - 1
+                };
+            }
+        }
+        self.error = None;
+    }
+
+    pub fn toggle_router(&mut self) {
+        self.swap_router = if self.swap_router == "jupiter" {
+            "titan".into()
+        } else {
+            "jupiter".into()
+        };
+        self.error = None;
+    }
+
+    /// Esc: true = leave wizard.
+    pub fn back(&mut self) -> bool {
+        match self.step {
+            ManageCompoundStep::Mode => true,
+            ManageCompoundStep::SwapSlippage => {
+                self.step = ManageCompoundStep::Mode;
+                false
+            }
+        }
+    }
+
+    pub fn advance(&mut self) -> ManageCompoundAdvance {
+        if self.fee_a == 0 && self.fee_b == 0 {
+            self.error = Some("no claimable fees".into());
+            return ManageCompoundAdvance::Continue;
+        }
+        match self.step {
+            ManageCompoundStep::Mode => {
+                self.with_swap = self.choice == 1;
+                if self.with_swap {
+                    self.step = ManageCompoundStep::SwapSlippage;
+                    ManageCompoundAdvance::Continue
+                } else {
+                    ManageCompoundAdvance::Ready
+                }
+            }
+            ManageCompoundStep::SwapSlippage => ManageCompoundAdvance::Ready,
+        }
     }
 }
 

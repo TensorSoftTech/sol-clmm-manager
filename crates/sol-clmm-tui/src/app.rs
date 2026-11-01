@@ -33,6 +33,9 @@ pub enum Screen {
     /// Wrap native SOL → WSOL ATA.
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     ManageWrap,
+    /// Claim fees → redeposit (compound).
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    ManageCompound,
     /// Create position wizard (`n`) — works with an empty position list.
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     CreatePosition,
@@ -47,6 +50,8 @@ pub enum Screen {
 pub enum ManageChoice {
     /// Add liquidity · 2-side or 1-side wizard.
     Deposit,
+    /// Claim fees → redeposit (no-swap / with-swap).
+    Compound,
     /// Native SOL → WSOL (`wrap_sol_ixs`).
     WrapSol,
     /// Close WSOL ATA → native SOL (`unwrap_sol_ix`).
@@ -63,8 +68,9 @@ pub enum ManageChoice {
 
 #[cfg(feature = "write")]
 impl ManageChoice {
-    pub const ALL: [ManageChoice; 7] = [
+    pub const ALL: [ManageChoice; 8] = [
         ManageChoice::Deposit,
+        ManageChoice::Compound,
         ManageChoice::WrapSol,
         ManageChoice::UnwrapSol,
         ManageChoice::Close,
@@ -76,6 +82,7 @@ impl ManageChoice {
     pub fn title(self) -> &'static str {
         match self {
             Self::Deposit => "deposit",
+            Self::Compound => "compound",
             Self::WrapSol => "wrap SOL",
             Self::UnwrapSol => "unwrap SOL",
             Self::Close => "close position",
@@ -88,6 +95,7 @@ impl ManageChoice {
     pub fn detail(self) -> &'static str {
         match self {
             Self::Deposit => "add liquidity · SOL as native · Jupiter wrapAndUnwrapSol on autoswap",
+            Self::Compound => "claim fees → redeposit · no-swap ratio or with-swap residual",
             Self::WrapSol => "native SOL → WSOL ATA · standalone",
             Self::UnwrapSol => "close WSOL ATA → native SOL · standalone",
             Self::Close => "claim fees → withdraw all → unwrap SOL → close account (1 tx)",
@@ -496,6 +504,8 @@ pub struct App {
     #[cfg(feature = "write")]
     pub manage_wrap: Option<crate::write_flow::ManageWrapWizard>,
     #[cfg(feature = "write")]
+    pub manage_compound: Option<crate::write_flow::ManageCompoundWizard>,
+    #[cfg(feature = "write")]
     pub write_confirm: Option<crate::write_flow::WriteConfirm>,
     /// Manage menu selection index (`m` on detail).
     #[cfg(feature = "write")]
@@ -570,6 +580,8 @@ impl App {
             manage_deposit: None,
             #[cfg(feature = "write")]
             manage_wrap: None,
+            #[cfg(feature = "write")]
+            manage_compound: None,
             #[cfg(feature = "write")]
             write_confirm: None,
             #[cfg(feature = "write")]
@@ -899,6 +911,7 @@ impl App {
                 | Screen::Manage
                 | Screen::ManageDeposit
                 | Screen::ManageWrap
+                | Screen::ManageCompound
                 | Screen::CreatePosition
                 | Screen::WriteConfirm
                 | Screen::Help
@@ -949,6 +962,19 @@ impl App {
                 #[cfg(not(feature = "write"))]
                 {
                     "wrap SOL".into()
+                }
+            }
+            Screen::ManageCompound => {
+                #[cfg(feature = "write")]
+                {
+                    self.manage_compound
+                        .as_ref()
+                        .map(|w| w.status_hint())
+                        .unwrap_or_else(|| "compound".into())
+                }
+                #[cfg(not(feature = "write"))]
+                {
+                    "compound".into()
                 }
             }
             Screen::Settings => "settings · ↑↓ · Enter · ? help · Esc back".into(),
@@ -2210,6 +2236,7 @@ impl App {
         let choice = ManageChoice::ALL[self.manage_choice.min(ManageChoice::ALL.len() - 1)];
         match choice {
             ManageChoice::Deposit => self.open_manage_deposit(rpc),
+            ManageChoice::Compound => self.open_manage_compound(),
             ManageChoice::WrapSol => self.open_manage_wrap(rpc),
             ManageChoice::UnwrapSol => self.detail_write_op(rpc, choice),
             other => self.detail_write_op(rpc, other),
@@ -2278,6 +2305,123 @@ impl App {
         self.status_line = wiz.status_hint();
         self.manage_wrap = Some(wiz);
         self.screen = Screen::ManageWrap;
+    }
+
+    #[cfg(feature = "write")]
+    fn open_manage_compound(&mut self) {
+        let Some(detail) = self.detail.as_ref() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        if detail.fee_a == 0 && detail.fee_b == 0 {
+            self.status_line = "no claimable fees to compound".into();
+            return;
+        }
+        let wiz = crate::write_flow::ManageCompoundWizard::from_detail(
+            detail,
+            self.swap_mode.clone(),
+        );
+        self.status_line = wiz.status_hint();
+        self.manage_compound = Some(wiz);
+        self.screen = Screen::ManageCompound;
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_compound_back(&mut self) {
+        let leave = self
+            .manage_compound
+            .as_mut()
+            .map(|w| w.back())
+            .unwrap_or(true);
+        if leave {
+            self.manage_compound = None;
+            self.screen = Screen::Manage;
+            self.status_line = "manage · ↑↓ · Enter · Esc · p pubkey".into();
+        } else if let Some(w) = &self.manage_compound {
+            self.status_line = w.status_hint();
+        }
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_compound_advance(&mut self) {
+        let ready = {
+            let Some(w) = self.manage_compound.as_mut() else {
+                return;
+            };
+            matches!(
+                w.advance(),
+                crate::write_flow::ManageCompoundAdvance::Ready
+            )
+        };
+        if let Some(w) = &self.manage_compound {
+            self.status_line = w.status_hint();
+        }
+        if ready {
+            self.submit_manage_compound();
+        }
+    }
+
+    #[cfg(feature = "write")]
+    fn submit_manage_compound(&mut self) {
+        let Some(detail) = self.detail.clone() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        let Some(wiz) = self.manage_compound.as_ref() else {
+            return;
+        };
+        let with_swap = wiz.with_swap();
+        let slip = wiz.swap_slippage_bps();
+        let router = wiz.swap_router.clone();
+
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let mut settings = self.write_settings_for_confirm(tip);
+        settings.swap_mode = Some(router.clone());
+        self.swap_mode = router;
+        let client = Client::new(self.price_mode, self.price_keys());
+        let result =
+            client.assemble_compound(payer.pubkey(), &detail, with_swap, slip, &settings);
+        let (plan, router_tip) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(w) = self.manage_compound.as_mut() {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("compound plan failed · {e}");
+                return;
+            }
+        };
+        if plan.instructions.is_empty() {
+            self.status_line = "compound: no instructions".into();
+            return;
+        }
+        let mut confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, router_tip);
+        confirm.position_pk = Some(detail.row.address.to_string());
+        confirm.pool_pk = Some(detail.pool.address.to_string());
+        confirm.pool_label = Some(format!(
+            "{} / {}",
+            detail.token_a.symbol, detail.token_b.symbol
+        ));
+        self.manage_compound = None;
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.screen = Screen::WriteConfirm;
+        self.status_line = "compound · ↑↓ priority fee · Enter simulate".into();
     }
 
     #[cfg(feature = "write")]
@@ -2486,7 +2630,7 @@ impl App {
             sol_clmm_manager::SolLegMode::Wsol
         };
         let plan = match kind {
-            ManageChoice::Deposit | ManageChoice::WrapSol => {
+            ManageChoice::Deposit | ManageChoice::WrapSol | ManageChoice::Compound => {
                 unreachable!("opens wizard");
             }
             ManageChoice::UnwrapSol => Ok(sol_clmm_manager::plan_unwrap_sol(authority)),

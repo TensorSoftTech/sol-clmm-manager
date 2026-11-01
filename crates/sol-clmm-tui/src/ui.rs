@@ -43,6 +43,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::ManageWrap => draw_manage_wrap(frame, app),
         #[cfg(not(feature = "write"))]
         Screen::ManageWrap => draw_detail(frame, app),
+        #[cfg(feature = "write")]
+        Screen::ManageCompound => draw_manage_compound(frame, app),
+        #[cfg(not(feature = "write"))]
+        Screen::ManageCompound => draw_detail(frame, app),
         Screen::CreatePosition => draw_create_position(frame, app),
         Screen::WriteConfirm => draw_write_confirm(frame, app),
     }
@@ -332,6 +336,26 @@ fn draw_manage_wrap(frame: &mut Frame, app: &mut App) {
         .unwrap_or_else(|| vec![Line::from("no wrap wizard")]);
     frame.render_widget(
         Paragraph::new(lines).block(panel("wrap SOL", false)),
+        chunks[0],
+    );
+    draw_footer(frame, app, chunks[1]);
+}
+
+#[cfg(feature = "write")]
+fn draw_manage_compound(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+        .split(area);
+
+    let lines = app
+        .manage_compound
+        .as_ref()
+        .map(|w| style_wizard_lines(w.lines()))
+        .unwrap_or_else(|| vec![Line::from("no compound wizard")]);
+    frame.render_widget(
+        Paragraph::new(lines).block(panel("compound · claim → deposit", false)),
         chunks[0],
     );
     draw_footer(frame, app, chunks[1]);
@@ -1292,7 +1316,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  P0: correct autoswap (maybe helper program) · prefer no-swap until then.",
+        "  P0: correct autoswap · compound live · reward≠A/B → opt-in swap into deposit.",
     );
     push(
         &mut out,

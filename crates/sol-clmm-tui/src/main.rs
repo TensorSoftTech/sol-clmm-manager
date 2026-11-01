@@ -471,7 +471,8 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
         | Screen::WriteConfirm
         | Screen::Manage
         | Screen::ManageDeposit
-        | Screen::ManageWrap => {
+        | Screen::ManageWrap
+        | Screen::ManageCompound => {
             if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                 app.screen = Screen::Positions;
                 app.status_line = app.positions_status_line();
@@ -601,6 +602,37 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             }
             _ => {}
         },
+        #[cfg(feature = "write")]
+        Screen::ManageCompound => {
+            use crate::write_flow::ManageCompoundStep;
+            let on_slip = app
+                .manage_compound
+                .as_ref()
+                .is_some_and(|w| w.step == ManageCompoundStep::SwapSlippage);
+            match code {
+                KeyCode::Esc => app.manage_compound_back(),
+                KeyCode::Enter => app.manage_compound_advance(),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(w) = app.manage_compound.as_mut() {
+                        w.select_next();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(w) = app.manage_compound.as_mut() {
+                        w.select_prev();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                KeyCode::Tab if on_slip => {
+                    if let Some(w) = app.manage_compound.as_mut() {
+                        w.toggle_router();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                _ => {}
+            }
+        }
         Screen::Help => match code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('h') => {
                 app.close_help();

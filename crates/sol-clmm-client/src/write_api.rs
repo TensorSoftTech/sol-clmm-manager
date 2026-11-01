@@ -6,13 +6,14 @@
 use anyhow::{Context, Result, bail};
 use sol_clmm_manager::store::AppSettings;
 use sol_clmm_manager::{
-    BudgetMode, CreatePositionParams, DepositShape, DepositSizing, DlmmStrategy, LiquidityDeltaPlan,
-    PositionDetail, PreparedTx, SendOutcome, SolLegMode, SwapMode, SwapPlan, TxBudget, Venue,
-    WriteOp, WritePlan, amounts_for_liquidity_delta, dedupe_ata_create_idempotent,
-    estimate_budget_signers, fetch_swap_instructions, is_wsol, liquidity_delta_for_open,
-    liquidity_delta_from_amounts, maybe_unwrap_after, maybe_wrap_before_deposit,
-    prepare_estimate_simulate_send, prepare_estimate_simulate_send_signers, prepare_v1_tx_signers,
-    simulate_and_send_v1, simulate_v1_tx, swap_to_match_hint,
+    BudgetMode, CreatePositionParams, DepositShape, DepositSizing, DlmmStrategy, ExpectedDeltas,
+    LiquidityDeltaPlan, PositionDetail, PreparedTx, SendOutcome, SolLegMode, SwapMode, SwapPlan,
+    TxBudget, Venue, WriteOp, WritePlan, amounts_for_liquidity_delta, compound_fee_plan,
+    dedupe_ata_create_idempotent, estimate_budget_signers, fetch_swap_instructions, is_wsol,
+    liquidity_delta_for_open, liquidity_delta_from_amounts, maybe_unwrap_after,
+    maybe_wrap_before_deposit, pool_has_wsol, prepare_estimate_simulate_send,
+    prepare_estimate_simulate_send_signers, prepare_v1_tx_signers, simulate_and_send_v1,
+    simulate_v1_tx, swap_to_match_hint,
 };
 use solana_client::rpc_client::RpcClient;
 use solana_keypair::Keypair;
@@ -500,7 +501,113 @@ impl Client {
         }
     }
 
-    /// Claim → optional swap → deposit (2-tx when swap present).
+    /// Claim fees (+ rewards) → redeposit into the same position.
+    ///
+    /// - `with_swap = false`: on-ratio slice of fees only; residual stays in wallet.
+    /// - `with_swap = true`: Dual + swap-to-match on full fee budgets (residual swapped in).
+    ///
+    /// Fees land in ATAs first (no mid-flow unwrap); SOL unwrap once at the end.
+    /// Returns `(plan, optional router tip)`.
+    pub fn assemble_compound(
+        &self,
+        authority: Pubkey,
+        detail: &PositionDetail,
+        with_swap: bool,
+        swap_slippage_bps: u16,
+        settings: &AppSettings,
+    ) -> Result<(WritePlan, Option<u64>)> {
+        let fee_a = detail.fee_a;
+        let fee_b = detail.fee_b;
+        anyhow::ensure!(
+            fee_a > 0 || fee_b > 0,
+            "no claimable fees to compound"
+        );
+
+        // Venue claim only — Client::plan_claim would unwrap before deposit.
+        let claim = match detail.row.venue {
+            Venue::OrcaWhirlpool => orca_whirlpool::write::plan_claim(authority, detail)?,
+            Venue::RaydiumClmm => raydium_clmm::write::plan_claim(authority, detail)?,
+            Venue::MeteoraDlmm => meteora_dlmm::write::plan_claim(authority, detail)?,
+        };
+
+        let strategy = Some(Self::dlmm_strategy_from_settings(settings));
+        // Fees are already in ATAs after claim (WSOL if SOL pool) — don't wrap native SOL.
+        let (amount_a, amount_b, shape, do_swap) = if with_swap {
+            (
+                fee_a,
+                fee_b,
+                DepositShape::Dual,
+                true,
+            )
+        } else {
+            let split = compound_fee_plan(
+                fee_a,
+                fee_b,
+                detail.pool.sqrt_price,
+                detail.row.tick_lower,
+                detail.row.tick_upper,
+                detail.pool.tick_current_index,
+            );
+            anyhow::ensure!(
+                split.deposit_a > 0 || split.deposit_b > 0,
+                "fees cannot form a deposit · {}",
+                split.note
+            );
+            (split.deposit_a, split.deposit_b, split.shape, false)
+        };
+
+        let (mut deposit, tip) = self.assemble_manage_deposit(
+            authority,
+            detail,
+            amount_a,
+            amount_b,
+            shape,
+            do_swap,
+            swap_slippage_bps,
+            SolLegMode::Wsol,
+            settings,
+            strategy,
+        )?;
+
+        // One tx: claim → (swap?) → increase L → unwrap SOL if pool has WSOL.
+        let mut ixs = claim.instructions;
+        ixs.append(&mut deposit.instructions);
+        if pool_has_wsol(&detail.token_a.mint, &detail.token_b.mint) {
+            ixs.extend(maybe_unwrap_after(
+                SolLegMode::NativeSol,
+                &authority,
+                &detail.token_a.mint,
+                &detail.token_b.mint,
+            ));
+        }
+
+        let mode = if with_swap {
+            "with-swap"
+        } else {
+            "no-swap"
+        };
+        let plan = WritePlan {
+            op: WriteOp::Compound,
+            venue_label: claim.venue_label,
+            summary: format!(
+                "compound {mode} · claim → deposit {amount_a}/{amount_b} · {}",
+                deposit.summary
+            ),
+            instructions: ixs,
+            follow_up: None,
+            expected: ExpectedDeltas {
+                amount_a: -(i128::from(amount_a)),
+                amount_b: -(i128::from(amount_b)),
+                fee_a,
+                fee_b,
+                note: format!("claim fees → redeposit ({mode})"),
+            },
+            payer: authority,
+        };
+        Ok((plan, tip))
+    }
+
+    /// Legacy stub — prefer [`Self::assemble_compound`].
     pub fn plan_compound(
         &self,
         authority: Pubkey,
@@ -508,22 +615,9 @@ impl Client {
         with_swap: bool,
         settings: &AppSettings,
     ) -> Result<WritePlan> {
-        let mut claim = self.plan_claim(authority, detail)?;
-        if with_swap {
-            let deposit = self.plan_deposit(
-                authority,
-                detail,
-                DepositShape::Dual,
-                DepositSizing::MaxAffordable,
-                Some(Self::dlmm_strategy_from_settings(settings)),
-                SolLegMode::Wsol,
-            )?;
-            // Swap leg left empty until amounts known post-claim; mark follow-up.
-            claim.op = WriteOp::Compound;
-            claim.summary = format!("compound · {} → deposit", claim.summary);
-            claim.follow_up = Some(Box::new(deposit));
-        }
-        Ok(claim)
+        Ok(self
+            .assemble_compound(authority, detail, with_swap, 50, settings)?
+            .0)
     }
 
     /// Claim fees+rewards + withdraw full L — keep position account.

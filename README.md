@@ -109,7 +109,12 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
 
 ### TODO — priority
 
-1. **Correct swaps (P0)** — deposit / create autoswap that actually matches the range ratio. Likely a **helper / intermediary program** (atomic: swap → exact A/B → increase L) so we are not fighting Jupiter/Titan quote drift + multi-ix race. Until then: prefer no-swap legs.
+1. **Correct swaps + claim→deposit (P0)** — same ratio math, two places:
+   - **Deposit / create autoswap** — wallet budgets → match range unit A/B (helper program likely: atomic swap → exact legs → increase L).
+   - **Compound (claim fees → redeposit)** — live in manage · still depends on correct swap sizing:
+     1. **No-swap** — limiting fee leg on-ratio; residual stays in wallet.
+     2. **With-swap** — Dual + value-weighted swap-to-match on full fee budgets.
+   - **Rewards ≠ pool mints** — when claimed rewards are a third token (not A/B), offer **swap reward → A and/or B** then include in the compound deposit (opt-in; skip / leave in wallet otherwise).
 2. **Rebalance / move position (P1 · final boss)** — when out of range (or user wants a new band): claim → withdraw/close → (swap if needed) → open a new in-range (or target) position in one managed flow. Same helper contract may own the atomic path. TUI: manage → rebalance wizard.
 3. **History / accounting (P2)** — minimal durable ledger (sig is enough to re-fetch chain data anytime):
    - **Inputs from us** — what we planned (op, venue, position/pool, amounts / shape / tip from the confirm plan).

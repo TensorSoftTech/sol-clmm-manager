@@ -513,6 +513,144 @@ pub fn deposit_ratio_planner(
     amounts_from_liquidity(unit_liquidity.max(1), sqrt_price, tick_lower, tick_upper)
 }
 
+/// Claimed fees → matched deposit core + residual (compound, no-swap mode).
+#[derive(Debug, Clone)]
+pub struct CompoundFeePlan {
+    pub side: RangeDepositSide,
+    /// Shape that fits the range without a swap.
+    pub shape: DepositShape,
+    /// On-ratio deposit from fees (limiting leg).
+    pub deposit_a: u64,
+    pub deposit_b: u64,
+    /// Leftover fee token(s) kept in wallet when not swapping.
+    pub residual_a: u64,
+    pub residual_b: u64,
+    pub note: String,
+}
+
+/// Split claimable fees into an on-ratio deposit + residual.
+///
+/// In-range: take the limiting fee leg so A/B matches unit deposit ratio.
+/// OOR A-only / B-only: deposit the needed fee side; other fee is residual.
+pub fn compound_fee_plan(
+    fee_a: u64,
+    fee_b: u64,
+    sqrt_price: u128,
+    tick_lower: i32,
+    tick_upper: i32,
+    tick_current: i32,
+) -> CompoundFeePlan {
+    let side = range_deposit_side(sqrt_price, tick_lower, tick_upper, tick_current);
+    if fee_a == 0 && fee_b == 0 {
+        return CompoundFeePlan {
+            side,
+            shape: DepositShape::Dual,
+            deposit_a: 0,
+            deposit_b: 0,
+            residual_a: 0,
+            residual_b: 0,
+            note: "no claimable fees".into(),
+        };
+    }
+    // DLMM / no √P: deposit whatever fees we have (venue sizes bins).
+    if sqrt_price == 0 {
+        return CompoundFeePlan {
+            side,
+            shape: DepositShape::Dual,
+            deposit_a: fee_a,
+            deposit_b: fee_b,
+            residual_a: 0,
+            residual_b: 0,
+            note: "DLMM · deposit fee A+B as budgets".into(),
+        };
+    }
+    match side {
+        RangeDepositSide::TokenAOnly => CompoundFeePlan {
+            side,
+            shape: DepositShape::SingleA,
+            deposit_a: fee_a,
+            deposit_b: 0,
+            residual_a: 0,
+            residual_b: fee_b,
+            note: if fee_b > 0 {
+                "A-only range · deposit fee A · residual fee B stays".into()
+            } else {
+                "A-only range · deposit fee A".into()
+            },
+        },
+        RangeDepositSide::TokenBOnly => CompoundFeePlan {
+            side,
+            shape: DepositShape::SingleB,
+            deposit_a: 0,
+            deposit_b: fee_b,
+            residual_a: fee_a,
+            residual_b: 0,
+            note: if fee_a > 0 {
+                "B-only range · deposit fee B · residual fee A stays".into()
+            } else {
+                "B-only range · deposit fee B".into()
+            },
+        },
+        RangeDepositSide::Both => {
+            let (ua, ub) = deposit_ratio_planner(sqrt_price, tick_lower, tick_upper, 1u128 << 48);
+            if ua == 0 || ub == 0 {
+                // Degenerate near bound — treat as single-side.
+                if ua == 0 {
+                    return CompoundFeePlan {
+                        side,
+                        shape: DepositShape::SingleB,
+                        deposit_a: 0,
+                        deposit_b: fee_b,
+                        residual_a: fee_a,
+                        residual_b: 0,
+                        note: "in-range but unit A=0 · deposit fee B only".into(),
+                    };
+                }
+                return CompoundFeePlan {
+                    side,
+                    shape: DepositShape::SingleA,
+                    deposit_a: fee_a,
+                    deposit_b: 0,
+                    residual_a: 0,
+                    residual_b: fee_b,
+                    note: "in-range but unit B=0 · deposit fee A only".into(),
+                };
+            }
+            let fa = u128::from(fee_a);
+            let fb = u128::from(fee_b);
+            // need_b for all of fee_a at unit ratio.
+            let need_b = fa.saturating_mul(ub) / ua;
+            let (dep_a, dep_b, res_a, res_b, note) = if need_b <= fb {
+                (
+                    fee_a,
+                    need_b.min(u128::from(u64::MAX)) as u64,
+                    0u64,
+                    fb.saturating_sub(need_b).min(u128::from(u64::MAX)) as u64,
+                    "in-range · limited by fee A · residual B stays".to_string(),
+                )
+            } else {
+                let need_a = fb.saturating_mul(ua) / ub;
+                (
+                    need_a.min(u128::from(u64::MAX)) as u64,
+                    fee_b,
+                    fa.saturating_sub(need_a).min(u128::from(u64::MAX)) as u64,
+                    0u64,
+                    "in-range · limited by fee B · residual A stays".to_string(),
+                )
+            };
+            CompoundFeePlan {
+                side,
+                shape: DepositShape::Dual,
+                deposit_a: dep_a,
+                deposit_b: dep_b,
+                residual_a: res_a,
+                residual_b: res_b,
+                note,
+            }
+        }
+    }
+}
+
 /// Suggested swap leg to rebalance wallet amounts toward the in-range deposit ratio.
 #[derive(Debug, Clone, Copy)]
 pub struct SwapToMatchHint {
@@ -605,30 +743,67 @@ pub fn swap_to_match_hint(
             })
         }
         DepositShape::Dual => {
-            if amount_a == 0 || amount_b == 0 || ua == 0 || ub == 0 {
+            // Value-weighted targets (same basis as SingleA/B). Raw scale_a/scale_b
+            // (fee_a×ub vs fee_b×ua) treats dust B as "excess" on A-heavy ranges and
+            // swaps B→A — then swap-out A is stranded because ΔL is still B-limited.
+            if ua == 0 || ub == 0 {
                 return None;
             }
-            let scale_a = (amount_a as u128).saturating_mul(ub);
-            let scale_b = (amount_b as u128).saturating_mul(ua);
-            if scale_a > scale_b {
-                let target_a = (amount_b as u128).saturating_mul(ua) / ub;
-                let excess = (amount_a as u128).saturating_sub(target_a) as u64;
-                if excess == 0 {
+            if amount_a == 0 && amount_b == 0 {
+                return None;
+            }
+            if amount_a == 0 {
+                // Funded B only — same as SingleB.
+                if amount_b < 2 || va == 0 {
                     return None;
                 }
+                let denom = va.saturating_add(vb).max(1);
+                let mut swap_in = ((amount_b as u128) * va / denom) as u64;
+                swap_in = swap_in.clamp(1, amount_b.saturating_sub(1));
+                return Some(SwapToMatchHint {
+                    in_is_a: false,
+                    swap_in_amount: swap_in,
+                });
+            }
+            if amount_b == 0 {
+                if amount_a < 2 || vb == 0 {
+                    return None;
+                }
+                let denom = va.saturating_add(vb).max(1);
+                let mut swap_in = ((amount_a as u128) * vb / denom) as u64;
+                swap_in = swap_in.clamp(1, amount_a.saturating_sub(1));
+                return Some(SwapToMatchHint {
+                    in_is_a: true,
+                    swap_in_amount: swap_in,
+                });
+            }
+            let denom = va.saturating_add(vb).max(1);
+            let val_a = value_a_in_b(u128::from(amount_a), sqrt_price);
+            let val_total = val_a.saturating_add(u128::from(amount_b));
+            // Post-swap amounts at unit ratio with the same spot value.
+            let target_a =
+                (val_total.saturating_mul(ua) / denom).min(u128::from(u64::MAX)) as u64;
+            let target_b =
+                (val_total.saturating_mul(ub) / denom).min(u128::from(u64::MAX)) as u64;
+            let excess_a = amount_a.saturating_sub(target_a);
+            let excess_b = amount_b.saturating_sub(target_b);
+            if excess_a == 0 && excess_b == 0 {
+                return None;
+            }
+            let excess_a_val = value_a_in_b(u128::from(excess_a), sqrt_price);
+            let excess_b_val = u128::from(excess_b);
+            // Swap the overweight side (by value); leave ≥1 of input for dust.
+            if excess_a_val >= excess_b_val && excess_a > 0 {
+                let swap_in = excess_a.min(amount_a.saturating_sub(1)).max(1);
                 Some(SwapToMatchHint {
                     in_is_a: true,
-                    swap_in_amount: excess.min(amount_a),
+                    swap_in_amount: swap_in,
                 })
-            } else if scale_b > scale_a {
-                let target_b = (amount_a as u128).saturating_mul(ub) / ua;
-                let excess = (amount_b as u128).saturating_sub(target_b) as u64;
-                if excess == 0 {
-                    return None;
-                }
+            } else if excess_b > 0 {
+                let swap_in = excess_b.min(amount_b.saturating_sub(1)).max(1);
                 Some(SwapToMatchHint {
                     in_is_a: false,
-                    swap_in_amount: excess.min(amount_b),
+                    swap_in_amount: swap_in,
                 })
             } else {
                 None
@@ -1076,6 +1251,9 @@ mod liq_shape_tests {
         let hint = swap_to_match_hint(a, b, sp, lower, upper, DepositShape::Dual).unwrap();
         assert!(!hint.in_is_a);
         assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < b);
+        let (pa, pb) = post_swap_from_hint(u128::from(a), u128::from(b), sp, hint);
+        let err = ratio_err(pa, pb, ua, ub);
+        assert!(err < 0.05, "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})");
     }
 
     #[test]
@@ -1089,6 +1267,46 @@ mod liq_shape_tests {
         let hint = swap_to_match_hint(a, b, sp, lower, upper, DepositShape::Dual).unwrap();
         assert!(hint.in_is_a);
         assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < a);
+        let (pa, pb) = post_swap_from_hint(u128::from(a), u128::from(b), sp, hint);
+        let err = ratio_err(pa, pb, ua, ub);
+        assert!(err < 0.05, "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})");
+    }
+
+    /// Compound-shaped fees: lots of SOL + dust USDC. Raw scale_a/scale_b swapped
+    /// USDC→SOL (stranded swap-out); value-weighted must swap SOL→USDC.
+    #[test]
+    fn dual_sol_heavy_dust_usdc_swaps_a_to_b() {
+        let (tick, sp) = sol_usdc_spot();
+        // Slightly A-heavy in-range (spot near lower) — old raw Dual flipped direction.
+        let lower = tick - 16;
+        let upper = tick + 128;
+        let fee_a = 54_600_000u64; // 0.0546 SOL
+        let fee_b = 391u64; // 0.000391 USDC
+        let hint =
+            swap_to_match_hint(fee_a, fee_b, sp, lower, upper, DepositShape::Dual).unwrap();
+        assert!(
+            hint.in_is_a,
+            "must swap SOL→USDC, not dust USDC→SOL (got in_is_a={})",
+            hint.in_is_a
+        );
+        assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < fee_a);
+        let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
+        let (pa, pb) =
+            post_swap_from_hint(u128::from(fee_a), u128::from(fee_b), sp, hint);
+        let err = ratio_err(pa, pb, ua, ub);
+        assert!(
+            err < 0.05,
+            "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})"
+        );
+        // Nearly all value should remain depositable (not stranded as excess A).
+        let plan = liquidity_delta_from_amounts(pa, pb, sp, lower, upper, DepositShape::Dual);
+        assert!(plan.liquidity_delta > 0);
+        assert!(
+            plan.amount_a as f64 > 0.85 * pa as f64,
+            "should deposit most post-swap A, got {} / {}",
+            plan.amount_a,
+            pa
+        );
     }
 
     // ── liquidity_delta_for_open + analyze ───────────────────────────────
@@ -1221,5 +1439,53 @@ mod liq_shape_tests {
             budget / 2
         );
         assert!((ha.swap_in_amount as i64 + hb.swap_in_amount as i64 - budget as i64).abs() <= 2);
+    }
+
+    // ── compound_fee_plan ────────────────────────────────────────────────
+
+    #[test]
+    fn compound_in_range_limited_by_scarce_b() {
+        let (tick, sp) = sol_usdc_spot();
+        let lower = tick - 64;
+        let upper = tick + 64;
+        let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
+        // Plenty of A, tiny B → limited by B.
+        let fee_a = (ua.min(u128::from(u64::MAX))) as u64;
+        let fee_b = ((ub / 10).max(1).min(u128::from(u64::MAX))) as u64;
+        let p = compound_fee_plan(fee_a, fee_b, sp, lower, upper, tick);
+        assert_eq!(p.shape, DepositShape::Dual);
+        assert_eq!(p.deposit_b, fee_b);
+        assert!(p.deposit_a > 0 && p.deposit_a < fee_a);
+        assert_eq!(p.residual_b, 0);
+        assert_eq!(p.residual_a, fee_a - p.deposit_a);
+        // Deposited ratio ≈ unit ratio.
+        let err = ratio_err(
+            u128::from(p.deposit_a),
+            u128::from(p.deposit_b),
+            ua,
+            ub,
+        );
+        assert!(err < 0.02, "ratio err {err}");
+    }
+
+    #[test]
+    fn compound_below_range_keeps_fee_b_as_residual() {
+        let sp = get_sqrt_price_at_tick(-30000).unwrap();
+        let p = compound_fee_plan(1_000_000_000, 5_000_000, sp, -23544, -23472, -30000);
+        assert_eq!(p.shape, DepositShape::SingleA);
+        assert_eq!(p.deposit_a, 1_000_000_000);
+        assert_eq!(p.deposit_b, 0);
+        assert_eq!(p.residual_b, 5_000_000);
+        assert_eq!(p.residual_a, 0);
+    }
+
+    #[test]
+    fn compound_above_range_keeps_fee_a_as_residual() {
+        let sp = get_sqrt_price_at_tick(-19000).unwrap();
+        let p = compound_fee_plan(1_000_000_000, 5_000_000, sp, -23544, -23472, -19000);
+        assert_eq!(p.shape, DepositShape::SingleB);
+        assert_eq!(p.deposit_b, 5_000_000);
+        assert_eq!(p.deposit_a, 0);
+        assert_eq!(p.residual_a, 1_000_000_000);
     }
 }
