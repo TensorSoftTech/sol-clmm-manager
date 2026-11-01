@@ -5,6 +5,12 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "write")]
+mod write_api;
+
+#[cfg(feature = "write")]
+pub use write_api::write_session_ok;
+
 use anyhow::Result;
 use sol_clmm_manager::enrich_rows;
 use sol_clmm_manager::rpc::{self, Rpc, RpcMeter, RpcStatus};
@@ -12,7 +18,7 @@ use sol_clmm_manager::store::Store;
 use solana_pubkey::Pubkey;
 
 pub use sol_clmm_manager::{
-    PositionDetail, PositionRow, PriceApiKeys, PriceMode, Venue, VenueFilter,
+    PoolPreview, PositionDetail, PositionRow, PriceApiKeys, PriceMode, Venue, VenueFilter,
 };
 
 /// Session knobs for list enrich / detail USD (not the Solana RPC handle).
@@ -98,14 +104,16 @@ impl Client {
     }
 
     /// Fetch detail for one row (dispatches on [`PositionRow::venue`]).
+    /// When `wallet` is set, also refreshes ATA + native SOL balances (needed for SOL pairs).
     pub fn position_detail(
         &self,
         rpc: &Rpc<'_>,
         row: &PositionRow,
         store: Option<&Store>,
         refresh_meta: bool,
+        wallet: Option<&Pubkey>,
     ) -> Result<PositionDetail> {
-        match row.venue {
+        let mut detail = match row.venue {
             Venue::OrcaWhirlpool => orca_whirlpool::fetch_position_detail(
                 rpc,
                 row,
@@ -113,7 +121,7 @@ impl Client {
                 self.config.price_mode,
                 &self.config.price_keys,
                 refresh_meta,
-            ),
+            )?,
             Venue::RaydiumClmm => raydium_clmm::fetch_position_detail(
                 rpc,
                 row,
@@ -121,7 +129,7 @@ impl Client {
                 self.config.price_mode,
                 &self.config.price_keys,
                 refresh_meta,
-            ),
+            )?,
             Venue::MeteoraDlmm => meteora_dlmm::fetch_position_detail(
                 rpc,
                 row,
@@ -129,7 +137,48 @@ impl Client {
                 self.config.price_mode,
                 &self.config.price_keys,
                 refresh_meta,
+            )?,
+        };
+        if let Some(w) = wallet {
+            detail.wallet_balances = sol_clmm_manager::fetch_wallet_pool_balances(
+                rpc,
+                w,
+                detail.token_a.mint,
+                detail.token_b.mint,
+            )
+            .ok();
+        }
+        Ok(detail)
+    }
+
+    /// Fetch pool + liquidity series for create-wizard range picking.
+    /// Resolves mint symbols via SQLite cache → Metaplex → Jupiter Tokens.
+    /// When `wallet` is set, also loads ATA (+ native SOL) balances for deposit caps.
+    pub fn pool_preview(
+        &self,
+        rpc: &Rpc<'_>,
+        venue: Venue,
+        pool: &Pubkey,
+        wallet: Option<&Pubkey>,
+        store: Option<&Store>,
+        refresh_meta: bool,
+    ) -> Result<PoolPreview> {
+        let keys = &self.config.price_keys;
+        match venue {
+            Venue::OrcaWhirlpool => orca_whirlpool::fetch_pool_preview(
+                rpc,
+                *pool,
+                wallet,
+                store,
+                refresh_meta,
+                keys,
             ),
+            Venue::RaydiumClmm => {
+                raydium_clmm::fetch_pool_preview(rpc, *pool, wallet, store, refresh_meta, keys)
+            }
+            Venue::MeteoraDlmm => {
+                meteora_dlmm::fetch_pool_preview(rpc, *pool, wallet, store, refresh_meta, keys)
+            }
         }
     }
 

@@ -21,10 +21,10 @@ pub fn amounts_from_liquidity(
         return (0, 0);
     }
 
-    let Ok(sa) = get_sqrt_price_at_tick(tick_lower) else {
+    let Some(sa) = get_sqrt_price_at_tick(tick_lower) else {
         return (0, 0);
     };
-    let Ok(sb) = get_sqrt_price_at_tick(tick_upper) else {
+    let Some(sb) = get_sqrt_price_at_tick(tick_upper) else {
         return (0, 0);
     };
     let sp = sqrt_price_x64;
@@ -45,9 +45,9 @@ pub fn amounts_from_liquidity(
 }
 
 /// Q64.64 √P at tick — Raydium / Uniswap V3 bit product.
-pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128, ()> {
-    if tick < MIN_TICK || tick > MAX_TICK {
-        return Err(());
+pub fn get_sqrt_price_at_tick(tick: i32) -> Option<u128> {
+    if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+        return None;
     }
     let abs_tick = tick.unsigned_abs();
 
@@ -86,11 +86,11 @@ pub fn get_sqrt_price_at_tick(tick: i32) -> Result<u128, ()> {
 
     if tick > 0 {
         if ratio == 0 {
-            return Err(());
+            return None;
         }
         ratio = u128::MAX / ratio;
     }
-    Ok(ratio)
+    Some(ratio)
 }
 
 /// Δx = L · (1/√a − 1/√b) = (L<<64)/√a − (L<<64)/√b  (floor).
@@ -110,6 +110,19 @@ fn get_amount_1_delta(mut sa: u128, mut sb: u128, liquidity: u128) -> u128 {
         std::mem::swap(&mut sa, &mut sb);
     }
     mul_shift_right_64(liquidity, sb - sa)
+}
+
+/// Token-B raw value of `amount_a` at Q64.64 √P (`price = B/A = (√P)²`).
+pub fn value_a_in_b(amount_a: u128, sqrt_price_x64: u128) -> u128 {
+    mul_shift_right_64(mul_shift_right_64(amount_a, sqrt_price_x64), sqrt_price_x64)
+}
+
+/// Token-A raw bought with `amount_b` at Q64.64 √P (spot, no fee).
+pub fn amount_a_from_b(amount_b: u128, sqrt_price_x64: u128) -> u128 {
+    if sqrt_price_x64 == 0 {
+        return 0;
+    }
+    div_shl_64(div_shl_64(amount_b, sqrt_price_x64), sqrt_price_x64)
 }
 
 /// floor((n << 64) / d).
@@ -180,6 +193,62 @@ pub fn format_amount(raw: u128, decimals: u8) -> String {
     format!("{whole}.{frac_trim}")
 }
 
+/// Parse a human amount (`"1.5"`, `"100"`) into raw base units for `decimals`.
+/// Accepts `.` or `,` as decimal separator. Rejects empty / overflow.
+pub fn parse_ui_amount(s: &str, decimals: u8) -> Result<u64, String> {
+    let s = s.trim().replace(',', ".");
+    if s.is_empty() {
+        return Err("empty amount".into());
+    }
+    if s.chars().filter(|c| *c == '.').count() > 1 {
+        return Err("invalid amount".into());
+    }
+    let (whole_s, frac_s) = match s.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s.as_str(), ""),
+    };
+    if whole_s.is_empty() && frac_s.is_empty() {
+        return Err("invalid amount".into());
+    }
+    if !whole_s.is_empty() && !whole_s.chars().all(|c| c.is_ascii_digit()) {
+        return Err("invalid amount".into());
+    }
+    if !frac_s.chars().all(|c| c.is_ascii_digit()) {
+        return Err("invalid amount".into());
+    }
+    if frac_s.len() > decimals as usize {
+        return Err(format!("too many decimals (max {decimals})"));
+    }
+    let whole: u128 = if whole_s.is_empty() {
+        0
+    } else {
+        whole_s
+            .parse()
+            .map_err(|_| "amount too large".to_string())?
+    };
+    let scale = 10u128.saturating_pow(decimals as u32);
+    let mut frac: u128 = if frac_s.is_empty() {
+        0
+    } else {
+        frac_s
+            .parse()
+            .map_err(|_| "invalid fraction".to_string())?
+    };
+    // Right-pad fractional digits to `decimals`.
+    let pad = decimals as usize - frac_s.len();
+    for _ in 0..pad {
+        frac = frac.saturating_mul(10);
+    }
+    let raw = whole
+        .checked_mul(scale)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or_else(|| "amount overflow".to_string())?;
+    if raw > u64::MAX as u128 {
+        return Err("amount overflow".into());
+    }
+    Ok(raw as u64)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TickPoint {
     pub index: i32,
@@ -192,7 +261,12 @@ pub struct TickPoint {
 }
 
 impl TickPoint {
-    pub fn basic(index: i32, initialized: bool, liquidity_net: i128, liquidity_gross: u128) -> Self {
+    pub fn basic(
+        index: i32,
+        initialized: bool,
+        liquidity_net: i128,
+        liquidity_gross: u128,
+    ) -> Self {
         Self {
             index,
             initialized,
@@ -206,6 +280,9 @@ impl TickPoint {
 }
 
 /// Prefer liquidity_gross histogram; paint position range; tag A / B / Both.
+///
+/// `pad_spacings` widens the X window beyond `[lower, upper]` (use
+/// [`crate::detail::CHART_FETCH_HALF_SPACINGS`] for SOL/USDC-scale context).
 pub fn build_liquidity_series(
     ticks: &BTreeMap<i32, TickPoint>,
     pool_liquidity: u128,
@@ -214,8 +291,9 @@ pub fn build_liquidity_series(
     lower: i32,
     upper: i32,
     spacing: u16,
+    pad_spacings: i32,
 ) -> Vec<LiquiditySample> {
-    let pad = spacing as i32 * 16;
+    let pad = spacing as i32 * pad_spacings.max(2);
     let min_t = lower.min(current_tick) - pad;
     let max_t = upper.max(current_tick) + pad;
     if min_t >= max_t {
@@ -252,7 +330,10 @@ pub fn build_liquidity_series(
 
     let mut merged: BTreeMap<i32, u128> = active;
     for (k, v) in gross {
-        merged.entry(k).and_modify(|e| *e = (*e).max(v)).or_insert(v);
+        merged
+            .entry(k)
+            .and_modify(|e| *e = (*e).max(v))
+            .or_insert(v);
     }
 
     let pos_h = position_liquidity.max(1);
@@ -271,7 +352,8 @@ pub fn build_liquidity_series(
     }
 
     let points: Vec<(i32, u128)> = merged.into_iter().collect();
-    downsample(&points, 56, current_tick, lower, upper)
+    // Denser buckets so zoom-in on SOL/USDC still has local depth samples.
+    downsample(&points, 128, current_tick, lower, upper)
 }
 
 fn classify_side(tick: i32, current: i32, lower: i32, upper: i32) -> (TokenSide, bool) {
@@ -359,6 +441,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_ui_amount_basic() {
+        assert_eq!(parse_ui_amount("1.5", 9).unwrap(), 1_500_000_000);
+        assert_eq!(parse_ui_amount("100", 6).unwrap(), 100_000_000);
+        assert_eq!(parse_ui_amount(".5", 6).unwrap(), 500_000);
+        assert_eq!(parse_ui_amount("1,25", 2).unwrap(), 125);
+        assert!(parse_ui_amount("1.123", 2).is_err());
+    }
+
+    #[test]
     fn sqrt_at_zero_is_one() {
         let sp = get_sqrt_price_at_tick(0).unwrap();
         assert_eq!(sp, Q64);
@@ -385,6 +476,38 @@ mod tests {
         let sp = get_sqrt_price_at_tick(50).unwrap();
         let (a, b) = amounts_from_liquidity(1_000_000_000_000, sp, 0, 100);
         assert!(a > 0 && b > 0);
+    }
+
+    #[test]
+    fn value_a_in_b_at_price_one() {
+        // tick 0 → √P = 1 → price B/A = 1 → value equals amount.
+        let sp = get_sqrt_price_at_tick(0).unwrap();
+        assert_eq!(value_a_in_b(1_000_000, sp), 1_000_000);
+        assert_eq!(amount_a_from_b(1_000_000, sp), 1_000_000);
+    }
+
+    #[test]
+    fn spot_convert_round_trip_sol_usdc_ticks() {
+        // Double floor (×price then ÷price) loses a few ULPs — keep relative error tiny.
+        for &tick in &[-23028, -20000, -10000, 0, 5000] {
+            let sp = get_sqrt_price_at_tick(tick).unwrap();
+            let a = 1_000_000_000u128; // 1 SOL-like
+            let b = value_a_in_b(a, sp);
+            assert!(b > 0, "tick {tick}");
+            let a2 = amount_a_from_b(b, sp);
+            let diff = a.abs_diff(a2);
+            let rel = diff as f64 / a as f64;
+            assert!(
+                rel < 1e-7,
+                "tick {tick}: a={a} → b={b} → a2={a2} diff={diff} rel={rel:.2e}"
+            );
+        }
+    }
+
+    #[test]
+    fn amount_a_from_b_zero_sqrt_is_zero() {
+        assert_eq!(amount_a_from_b(1_000_000, 0), 0);
+        assert_eq!(value_a_in_b(1_000_000, 0), 0);
     }
 
     #[test]

@@ -1,13 +1,11 @@
+use anyhow::Result;
+use ratatui::widgets::TableState;
 use sol_clmm_client::Client;
 use sol_clmm_manager::rpc::{self, Rpc, RpcMeter, RpcStatus};
 use sol_clmm_manager::store::{
-    self, default_db_path, display_path, expand_tilde, AppSettings, Store,
+    self, AppSettings, Store, default_db_path, display_path, expand_tilde,
 };
-use sol_clmm_manager::{
-    PositionDetail, PositionRow, PriceApiKeys, PriceMode, VenueFilter,
-};
-use anyhow::Result;
-use ratatui::widgets::TableState;
+use sol_clmm_manager::{PositionDetail, PositionRow, PriceApiKeys, PriceMode, VenueFilter};
 use solana_keypair::{Signer, read_keypair_file};
 use solana_pubkey::Pubkey;
 use std::path::PathBuf;
@@ -20,12 +18,84 @@ pub enum Screen {
     DbSetup,
     Setup,
     RpcOffer,
+    WriteConsent,
     Positions,
     Settings,
     SettingsRpc,
     SettingsApiKey,
     Detail,
+    /// Position manage menu (`m`) — deposit / claim / withdraw / close.
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    Manage,
+    /// Add liquidity to an open position (2-side / 1-side).
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    ManageDeposit,
+    /// Wrap native SOL → WSOL ATA.
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    ManageWrap,
+    /// Create position wizard (`n`) — works with an empty position list.
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    CreatePosition,
+    /// Simulate → user confirm → send; on failure offer retry.
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    WriteConfirm,
     Help,
+}
+
+#[cfg(feature = "write")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageChoice {
+    /// Add liquidity · 2-side or 1-side wizard.
+    Deposit,
+    /// Native SOL → WSOL (`wrap_sol_ixs`).
+    WrapSol,
+    /// Close WSOL ATA → native SOL (`unwrap_sol_ix`).
+    UnwrapSol,
+    /// Claim fees+rewards + withdraw all + close position account.
+    Close,
+    /// Claim fees+rewards + withdraw all liquidity (keep account).
+    ClaimWithdraw,
+    /// Withdraw all liquidity only.
+    Withdraw,
+    /// Claim fees+rewards only.
+    Claim,
+}
+
+#[cfg(feature = "write")]
+impl ManageChoice {
+    pub const ALL: [ManageChoice; 7] = [
+        ManageChoice::Deposit,
+        ManageChoice::WrapSol,
+        ManageChoice::UnwrapSol,
+        ManageChoice::Close,
+        ManageChoice::ClaimWithdraw,
+        ManageChoice::Withdraw,
+        ManageChoice::Claim,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Deposit => "deposit",
+            Self::WrapSol => "wrap SOL",
+            Self::UnwrapSol => "unwrap SOL",
+            Self::Close => "close position",
+            Self::ClaimWithdraw => "claim + withdraw",
+            Self::Withdraw => "withdraw liquidity",
+            Self::Claim => "claim fees + rewards",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::Deposit => "add liquidity · SOL as native · Jupiter wrapAndUnwrapSol on autoswap",
+            Self::WrapSol => "native SOL → WSOL ATA · standalone",
+            Self::UnwrapSol => "close WSOL ATA → native SOL · standalone",
+            Self::Close => "claim fees → withdraw all → unwrap SOL → close account (1 tx)",
+            Self::ClaimWithdraw => "claim fees → withdraw all · unwrap SOL · keep NFT",
+            Self::Withdraw => "remove all liquidity · unwrap SOL · fees stay unclaimed",
+            Self::Claim => "collect fees + rewards only · liquidity stays",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +103,7 @@ pub enum ApiKeyTarget {
     Jupiter,
     Titan,
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupStep {
@@ -68,7 +139,7 @@ impl DbExistChoice {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::UseExisting => "use existing database",
+            Self::UseExisting => "load existing database",
             Self::Overwrite => "overwrite (wipe wallet / RPC / token cache)",
         }
     }
@@ -122,30 +193,67 @@ impl RpcChoice {
     }
 }
 
+/// Sentinel · network fee sample (capped by tip ceiling).
+pub const TIP_AUTO: u64 = u64::MAX;
+
+/// Priority fee presets. `0` = off · `TIP_AUTO` = network sample.
+pub const TIP_PRESETS: [u64; 9] = [
+    0, // off — no priority fee on the tx
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    25_000,
+    50_000,
+    100_000,
+    TIP_AUTO,
+];
+
+pub fn tip_label(tip: u64) -> String {
+    if tip == 0 {
+        "OFF · no priority fee".into()
+    } else if tip == TIP_AUTO {
+        "auto · network sample (capped)".into()
+    } else {
+        format!("{tip} lamports ({:.6} SOL)", tip as f64 / 1e9)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsItem {
     PrivacyTrim,
     PriceMode,
+    SwapMode,
+    BudgetMode,
+    PriorityFee,
+    WriteAccess,
     JupiterKey,
     TitanKey,
     ApiPaidFast,
+    DlmmStrategy,
     ChangeRpc,
     ChangeWallet,
     Back,
 }
 
 impl SettingsItem {
-    pub const ALL: [SettingsItem; 8] = [
+    pub const ALL: [SettingsItem; 13] = [
         SettingsItem::PrivacyTrim,
         SettingsItem::PriceMode,
+        SettingsItem::SwapMode,
+        SettingsItem::BudgetMode,
+        SettingsItem::PriorityFee,
+        SettingsItem::WriteAccess,
         SettingsItem::JupiterKey,
         SettingsItem::TitanKey,
         SettingsItem::ApiPaidFast,
+        SettingsItem::DlmmStrategy,
         SettingsItem::ChangeRpc,
         SettingsItem::ChangeWallet,
         SettingsItem::Back,
     ];
 
+    #[allow(clippy::too_many_arguments)]
     pub fn label(
         self,
         privacy_trim: bool,
@@ -153,6 +261,11 @@ impl SettingsItem {
         jupiter_key: bool,
         titan_key: bool,
         api_paid_fast: bool,
+        swap_mode: &str,
+        budget_mode: &str,
+        tip_lamports: u64,
+        write_allowed: Option<bool>,
+        dlmm_strategy: &str,
     ) -> String {
         match self {
             Self::PrivacyTrim => format!(
@@ -163,9 +276,27 @@ impl SettingsItem {
                     "OFF · full"
                 }
             ),
-            Self::PriceMode => format!(
-                "USD estimate · {}  [Enter cycles]",
-                price_mode.short()
+            Self::PriceMode => format!("USD estimate · {}  [Enter cycles]", price_mode.short()),
+            Self::SwapMode => format!("swap router · {swap_mode}  [Enter cycles]"),
+            Self::BudgetMode => {
+                format!("tx v1 CU · {budget_mode}  [Enter cycles · auto = sim CU]")
+            }
+            Self::PriorityFee => {
+                format!("priority fee · {}  [Enter cycles]", tip_label(tip_lamports))
+            }
+            Self::WriteAccess => format!(
+                "writes  [{}]",
+                match write_allowed {
+                    Some(true) => "ENABLED · Enter disables",
+                    Some(false) => "DISABLED · Enter enables",
+                    None => {
+                        if sol_clmm_manager::WRITE_ENABLED {
+                            "ask on start · Enter enables"
+                        } else {
+                            "compiled read-only · cargo --features write"
+                        }
+                    }
+                }
             ),
             Self::JupiterKey => format!(
                 "Jupiter API key  [{}]",
@@ -191,6 +322,9 @@ impl SettingsItem {
                     "OFF · free-tier throttle"
                 }
             ),
+            Self::DlmmStrategy => {
+                format!("DLMM deposit strategy · {dlmm_strategy}  [Enter cycles]")
+            }
             Self::ChangeRpc => "change RPC URL".into(),
             Self::ChangeWallet => "change wallet".into(),
             Self::Back => "back to positions".into(),
@@ -265,8 +399,12 @@ impl DbWizard {
 pub enum PendingWork {
     None,
     /// `refresh_meta` → re-fetch token symbols (skip SQLite read).
-    List { refresh_meta: bool },
-    Detail { refresh_meta: bool },
+    List {
+        refresh_meta: bool,
+    },
+    Detail {
+        refresh_meta: bool,
+    },
 }
 
 /// Result of a background list/detail fetch (keeps UI animating).
@@ -277,8 +415,14 @@ pub enum BgFetchResult {
         meter: RpcMeter,
     },
     Detail {
-        result: Result<PositionDetail>,
+        result: Box<Result<PositionDetail>>,
         meter: RpcMeter,
+    },
+    #[cfg(feature = "write")]
+    Write {
+        result: Box<anyhow::Result<sol_clmm_manager::SendOutcome>>,
+        /// Fresh wallet SOL/ATA balances after a successful send (every tx changes them).
+        balances: Option<sol_clmm_manager::WalletPoolBalances>,
     },
 }
 
@@ -299,6 +443,17 @@ pub struct App {
     pub titan_api_key: Option<String>,
     /// When true + key set → short throttle; false → free-tier intervals.
     pub api_paid_fast: bool,
+    /// `jupiter` | `titan` — swap router for deposit+swap / compound.
+    pub swap_mode: String,
+    /// `auto` | `manual` — tx v1 CU estimation.
+    pub budget_mode: String,
+    /// Priority fee lamports (`0` = network auto, capped). Used for every write.
+    pub tip_lamports: u64,
+    pub write_allowed: Option<bool>,
+    pub write_prompt_skip: bool,
+    /// Path to keypair JSON (CLI / wizard / SQLite). Secret bytes are never stored — load at sign time.
+    pub keypair_path: Option<String>,
+    pub dlmm_strategy: String,
     pub rpc_url: String,
     /// CLI/default RPC before store overrides (used to detect "user already set private").
     cli_rpc_url: String,
@@ -317,9 +472,11 @@ pub struct App {
     pub detail: Option<PositionDetail>,
     pub detail_error: Option<String>,
     pub detail_loading: bool,
+    /// Detail chart X zoom (± tick-spacings around current). `+/-` · `0` fit range.
+    pub detail_chart_half_spacings: i32,
     /// True while list RPC is in flight (survives clearing `pending` before fetch).
     pub list_loading: bool,
-    /// `p` Solscan overlay active — second `p` restores the previous status line.
+    /// `p` pubkey overlay active — second `p` restores the previous status line.
     pub links_overlay: bool,
     status_before_links: Option<String>,
     /// When loading started — drives the oscillating progress bar.
@@ -332,10 +489,31 @@ pub struct App {
     pub help_return: Screen,
     /// Scroll offset (lines) inside the help panel.
     pub help_scroll: u16,
+    #[cfg(feature = "write")]
+    pub create: Option<crate::write_flow::CreateWizard>,
+    #[cfg(feature = "write")]
+    pub manage_deposit: Option<crate::write_flow::ManageDepositWizard>,
+    #[cfg(feature = "write")]
+    pub manage_wrap: Option<crate::write_flow::ManageWrapWizard>,
+    #[cfg(feature = "write")]
+    pub write_confirm: Option<crate::write_flow::WriteConfirm>,
+    /// Manage menu selection index (`m` on detail).
+    #[cfg(feature = "write")]
+    pub manage_choice: usize,
+    /// Scroll offset inside confirm error / log panel.
+    #[cfg(feature = "write")]
+    pub confirm_scroll: u16,
 }
 
 impl App {
-    pub fn new(rpc_url: String, wallet: Option<Pubkey>, existing_db: Option<PathBuf>) -> Self {
+    /// `db_from_cli`: `--db` / `SOL_CLMM_DB` — open immediately.
+    /// Otherwise a saved pointer only pre-fills the DB wizard (use existing / overwrite).
+    pub fn new(
+        rpc_url: String,
+        wallet: Option<Pubkey>,
+        existing_db: Option<PathBuf>,
+        db_from_cli: bool,
+    ) -> Self {
         let mut app = Self {
             screen: Screen::DbSetup,
             db: DbWizard::new(),
@@ -348,9 +526,20 @@ impl App {
             api_key_target: ApiKeyTarget::Jupiter,
             privacy_trim: false,
             price_mode: PriceMode::OnChain,
-            jupiter_api_key: std::env::var("JUPITER_API_KEY").ok().filter(|s| !s.is_empty()),
-            titan_api_key: std::env::var("TITAN_API_KEY").ok().filter(|s| !s.is_empty()),
+            jupiter_api_key: std::env::var("JUPITER_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            titan_api_key: std::env::var("TITAN_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
             api_paid_fast: false,
+            swap_mode: "jupiter".into(),
+            budget_mode: "auto".into(),
+            tip_lamports: 5_000,
+            write_allowed: None,
+            write_prompt_skip: false,
+            keypair_path: None,
+            dlmm_strategy: "curve".into(),
             rpc_url: rpc_url.clone(),
             cli_rpc_url: rpc_url,
             cli_wallet: wallet,
@@ -366,6 +555,7 @@ impl App {
             detail: None,
             detail_error: None,
             detail_loading: false,
+            detail_chart_half_spacings: sol_clmm_manager::CHART_HALF_SPACINGS_DEFAULT,
             list_loading: false,
             links_overlay: false,
             status_before_links: None,
@@ -374,24 +564,46 @@ impl App {
             rpc_meter: RpcMeter::default(),
             help_return: Screen::Positions,
             help_scroll: 0,
+            #[cfg(feature = "write")]
+            create: None,
+            #[cfg(feature = "write")]
+            manage_deposit: None,
+            #[cfg(feature = "write")]
+            manage_wrap: None,
+            #[cfg(feature = "write")]
+            write_confirm: None,
+            #[cfg(feature = "write")]
+            manage_choice: 0,
+            #[cfg(feature = "write")]
+            confirm_scroll: 0,
         };
 
         if let Some(path) = existing_db {
-            match Store::open(&path, false) {
-                Ok(store) => {
-                    app.finish_store(store);
+            if db_from_cli {
+                match Store::open(&path, false) {
+                    Ok(store) => app.finish_store(store),
+                    Err(e) => {
+                        app.db.error = Some(format!("open {}: {e:#}", display_path(&path)));
+                        app.db.input = display_path(&path);
+                        app.db.phase = DbSetupPhase::ChooseLocation;
+                        app.status_line =
+                            "could not open --db · ↑↓ choose path · Enter · q quit".into();
+                    }
                 }
-                Err(e) => {
-                    app.screen = Screen::DbSetup;
-                    app.db.error = Some(format!("open {}: {e:#}", display_path(&path)));
-                    app.db.input = display_path(&path);
-                    app.db.phase = DbSetupPhase::ChooseLocation;
-                    app.status_line =
-                        "could not open saved DB · ↑↓ choose path · Enter · q quit".into();
-                }
+            } else if path.exists() {
+                // Last session DB — ask before jumping to positions.
+                app.db.pending_path = Some(path.clone());
+                app.db.phase = DbSetupPhase::ConfirmExist;
+                app.db.selected = 0; // UseExisting
+                app.status_line = format!(
+                    "saved DB · {} · ↑↓ use / overwrite · Enter · Esc other path",
+                    display_path(&path)
+                );
+            } else {
+                app.status_line =
+                    "saved DB missing · choose where to store SQLite · ↑↓ · Enter · q quit".into();
             }
         } else {
-            app.screen = Screen::DbSetup;
             app.status_line =
                 "first run · choose where to store SQLite · ↑↓ · Enter · q quit".into();
         }
@@ -429,28 +641,51 @@ impl App {
         if let Some(mode) = &settings.price_mode {
             self.price_mode = PriceMode::from_setting(mode);
         }
-        if let Some(k) = &settings.jupiter_api_key {
-            if !k.is_empty() {
-                self.jupiter_api_key = Some(k.clone());
-            }
+        if let Some(k) = &settings.jupiter_api_key
+            && !k.is_empty()
+        {
+            self.jupiter_api_key = Some(k.clone());
         }
-        if let Some(k) = &settings.titan_api_key {
-            if !k.is_empty() {
-                self.titan_api_key = Some(k.clone());
-            }
+        if let Some(k) = &settings.titan_api_key
+            && !k.is_empty()
+        {
+            self.titan_api_key = Some(k.clone());
         }
         self.api_paid_fast = settings.api_paid_fast;
+        if let Some(m) = &settings.swap_mode {
+            self.swap_mode = m.clone();
+        }
+        if let Some(m) = &settings.tx_budget_mode {
+            self.budget_mode = m.clone();
+        }
+        if let Some(v) = settings.tx_tip_lamports {
+            self.tip_lamports = v;
+        }
+        self.write_allowed = settings.write_allowed;
+        self.write_prompt_skip = settings.write_prompt_skip;
+        if let Some(p) = &settings.keypair_path {
+            self.keypair_path = Some(p.clone());
+        }
+        if let Some(s) = &settings.dlmm_strategy {
+            self.dlmm_strategy = s.clone();
+        }
         if let Some(url) = &settings.rpc_url {
             self.rpc_url = url.clone();
             self.rpc_dirty = true;
         }
-        if self.cli_wallet.is_none() {
-            if let Some(pk) = &settings.wallet_pubkey {
-                if let Ok(pk) = pk.parse::<Pubkey>() {
-                    self.wallet = Some(pk);
-                }
-            }
+        if self.cli_wallet.is_none()
+            && let Some(pk) = &settings.wallet_pubkey
+            && let Ok(pk) = pk.parse::<Pubkey>()
+        {
+            self.wallet = Some(pk);
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn writes_live(&self) -> bool {
+        sol_clmm_manager::WRITE_ENABLED
+            && self.write_allowed == Some(true)
+            && self.keypair_path.is_some()
     }
 
     pub fn price_keys(&self) -> PriceApiKeys {
@@ -469,7 +704,10 @@ impl App {
         }
     }
 
-    fn persist_wallet(&self, pubkey: &Pubkey, keypair_path: Option<&str>) {
+    fn persist_wallet(&mut self, pubkey: &Pubkey, keypair_path: Option<&str>) {
+        if let Some(path) = keypair_path {
+            self.keypair_path = Some(path.to_string());
+        }
         if let Some(store) = &self.store {
             let _ = store.set_wallet_pubkey(&pubkey.to_string());
             if let Some(path) = keypair_path {
@@ -525,8 +763,59 @@ impl App {
             self.status_line =
                 "public RPC detected · ↑↓ choose · Enter · private RPC = better performance".into();
         } else {
-            self.enter_positions();
+            self.maybe_write_consent_then_positions();
         }
+    }
+
+    /// After RPC offer / wallet ready: ask write consent once (if compiled with `write`).
+    pub fn maybe_write_consent_then_positions(&mut self) {
+        if sol_clmm_manager::WRITE_ENABLED
+            && self.keypair_path.is_some()
+            && !self.write_prompt_skip
+            && self.write_allowed.is_none()
+        {
+            self.screen = Screen::WriteConsent;
+            self.setup = WizardState::new();
+            self.status_line =
+                "allow write access? · ↑↓ Yes/No/Don't ask · Enter · Esc = no".into();
+            return;
+        }
+        self.enter_positions();
+    }
+
+    pub fn write_consent_choices() -> [&'static str; 3] {
+        [
+            "Yes · allow claim / deposit / withdraw (tx v1 · always simulate)",
+            "No · read-only this session",
+            "Don't ask again · remember No",
+        ]
+    }
+
+    pub fn write_consent_activate(&mut self) {
+        let i = self.setup.selected.min(2);
+        match i {
+            0 => {
+                self.write_allowed = Some(true);
+                if let Some(store) = &self.store {
+                    let _ = store.set_write_allowed(true);
+                }
+            }
+            1 => {
+                self.write_allowed = Some(false);
+                if let Some(store) = &self.store {
+                    let _ = store.set_write_allowed(false);
+                }
+            }
+            _ => {
+                self.write_allowed = Some(false);
+                self.write_prompt_skip = true;
+                if let Some(store) = &self.store {
+                    let _ = store.set_write_allowed(false);
+                    let _ = store.set_write_prompt_skip(true);
+                }
+            }
+        }
+        self.enter_positions();
     }
 
     fn enter_positions(&mut self) {
@@ -534,6 +823,11 @@ impl App {
         self.detail = None;
         self.detail_error = None;
         self.begin_list_load(false, "loading from RPC…");
+    }
+
+    /// Esc from write-consent → positions without allowing writes.
+    pub fn enter_positions_public(&mut self) {
+        self.enter_positions();
     }
 
     pub fn request_list_refresh(&mut self) {
@@ -583,8 +877,13 @@ impl App {
         let shown = self.filtered_indices().len();
         let total = self.positions.len();
         let venue = self.venue_filter.label();
+        let create_hint = if sol_clmm_manager::WRITE_ENABLED {
+            " · n create"
+        } else {
+            ""
+        };
         format!(
-            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue · Enter detail · p Solscan · s settings · r refresh · q"
+            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue{create_hint} · Enter detail · p pubkey · s settings · r refresh · q"
         )
     }
 
@@ -597,6 +896,11 @@ impl App {
                 | Screen::RpcOffer
                 | Screen::SettingsRpc
                 | Screen::SettingsApiKey
+                | Screen::Manage
+                | Screen::ManageDeposit
+                | Screen::ManageWrap
+                | Screen::CreatePosition
+                | Screen::WriteConfirm
                 | Screen::Help
         ) {
             return;
@@ -613,8 +917,47 @@ impl App {
         self.screen = back;
         self.help_scroll = 0;
         self.status_line = match back {
-            Screen::Detail => "detail · p pubkey/Solscan · r refresh · ? help · Esc back".into(),
+            Screen::Detail => {
+                if self.writes_live() {
+                    "detail · m manage · p pubkey · r refresh · Esc".into()
+                } else {
+                    "detail · p pubkey · r refresh · ? help · Esc back".into()
+                }
+            }
+            Screen::Manage => "manage · ↑↓ · Enter · Esc · p pubkey".into(),
+            Screen::ManageDeposit => {
+                #[cfg(feature = "write")]
+                {
+                    self.manage_deposit
+                        .as_ref()
+                        .map(|w| w.status_hint())
+                        .unwrap_or_else(|| "deposit".into())
+                }
+                #[cfg(not(feature = "write"))]
+                {
+                    "deposit".into()
+                }
+            }
+            Screen::ManageWrap => {
+                #[cfg(feature = "write")]
+                {
+                    self.manage_wrap
+                        .as_ref()
+                        .map(|w| w.status_hint())
+                        .unwrap_or_else(|| "wrap SOL".into())
+                }
+                #[cfg(not(feature = "write"))]
+                {
+                    "wrap SOL".into()
+                }
+            }
             Screen::Settings => "settings · ↑↓ · Enter · ? help · Esc back".into(),
+            Screen::CreatePosition => {
+                "create · ←→ range · Tab edge · Enter next · Esc back".into()
+            }
+            Screen::WriteConfirm => {
+                "manage tx · [ ] tip · Enter sim/send · Esc".into()
+            }
             _ => self.positions_status_line(),
         };
     }
@@ -638,10 +981,23 @@ impl App {
     }
 
     pub fn is_busy(&self) -> bool {
+        let write_busy = {
+            #[cfg(feature = "write")]
+            {
+                self.write_confirm
+                    .as_ref()
+                    .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy)
+            }
+            #[cfg(not(feature = "write"))]
+            {
+                false
+            }
+        };
         self.list_loading
             || self.detail_loading
             || self.bg_rx.is_some()
             || self.pending != PendingWork::None
+            || write_busy
     }
 
     /// 0.0 → 1.0 then wrap (slow left→right sweep for the in-panel load bar).
@@ -717,8 +1073,7 @@ impl App {
                     self.db.phase = DbSetupPhase::CustomInput;
                     self.db.input = display_path(&self.db.default_path);
                     self.db.error = None;
-                    self.status_line =
-                        "type SQLite path · Enter · Esc back".into();
+                    self.status_line = "type SQLite path · Enter · Esc back".into();
                 }
             },
             DbSetupPhase::CustomInput => {
@@ -747,10 +1102,7 @@ impl App {
             self.db.phase = DbSetupPhase::ConfirmExist;
             self.db.selected = 0;
             self.db.error = None;
-            self.status_line = format!(
-                "DB exists at {} · ↑↓ · Enter",
-                display_path(&path)
-            );
+            self.status_line = format!("DB exists at {} · ↑↓ · Enter", display_path(&path));
         } else {
             self.db_open(path, false);
         }
@@ -778,8 +1130,7 @@ impl App {
                 self.db.pending_path = None;
                 self.db.error = None;
                 self.db.selected = 0;
-                self.status_line =
-                    "choose where to store SQLite · ↑↓ · Enter · q quit".into();
+                self.status_line = "choose where to store SQLite · ↑↓ · Enter · q quit".into();
             }
             DbSetupPhase::ChooseLocation => self.quit(),
         }
@@ -847,13 +1198,86 @@ impl App {
                     self.price_mode.short()
                 );
             }
+            SettingsItem::SwapMode => {
+                self.swap_mode = if self.swap_mode == "titan" {
+                    "jupiter".into()
+                } else {
+                    "titan".into()
+                };
+                if let Some(store) = &self.store {
+                    let _ = store.set_swap_mode(&self.swap_mode);
+                }
+                self.status_line = format!("swap router → {}", self.swap_mode);
+            }
+            SettingsItem::BudgetMode => {
+                self.budget_mode = if self.budget_mode == "manual" {
+                    "auto".into()
+                } else {
+                    "manual".into()
+                };
+                if let Some(store) = &self.store {
+                    let _ = store.set_tx_budget_mode(&self.budget_mode);
+                }
+                self.status_line = format!(
+                    "tx v1 CU → {} · tip is separate (priority fee setting)",
+                    self.budget_mode
+                );
+            }
+            SettingsItem::PriorityFee => {
+                let idx = TIP_PRESETS
+                    .iter()
+                    .position(|&p| p == self.tip_lamports)
+                    .unwrap_or(3); // default slot = 5_000
+                self.tip_lamports = TIP_PRESETS[(idx + 1) % TIP_PRESETS.len()];
+                if let Some(store) = &self.store {
+                    let _ = store.set_tx_tip_lamports(self.tip_lamports);
+                }
+                self.status_line = format!("priority fee → {}", tip_label(self.tip_lamports));
+            }
+            SettingsItem::WriteAccess => {
+                if !sol_clmm_manager::WRITE_ENABLED {
+                    self.status_line =
+                        "read-only build · cargo run -p sol-clmm-tui --features write".into();
+                    return;
+                }
+                let next = !matches!(self.write_allowed, Some(true));
+                self.write_allowed = Some(next);
+                if next {
+                    // Re-enable: clear "don't ask again" so consent can return if unset later.
+                    self.write_prompt_skip = false;
+                }
+                if let Some(store) = &self.store {
+                    let _ = store.set_write_allowed(next);
+                    if next {
+                        let _ = store.set_write_prompt_skip(false);
+                    }
+                }
+                self.status_line = if next {
+                    "writes ENABLED · n create · claims need keypair + confirm".into()
+                } else {
+                    "writes DISABLED · reads only (create/claim blocked)".into()
+                };
+            }
+            SettingsItem::DlmmStrategy => {
+                self.dlmm_strategy = match self.dlmm_strategy.as_str() {
+                    "curve" => "bid-ask",
+                    "bid-ask" => "spot-tight",
+                    "spot-tight" => "spot-spread",
+                    "spot-spread" => "spot-wide",
+                    _ => "curve",
+                }
+                .into();
+                if let Some(store) = &self.store {
+                    let _ = store.set_dlmm_strategy(&self.dlmm_strategy);
+                }
+                self.status_line = format!("DLMM strategy → {}", self.dlmm_strategy);
+            }
             SettingsItem::JupiterKey => {
                 self.api_key_target = ApiKeyTarget::Jupiter;
                 self.screen = Screen::SettingsApiKey;
                 self.settings_api_key = WizardState::new();
                 self.settings_api_key.step = SetupStep::Input;
-                self.settings_api_key.input =
-                    self.jupiter_api_key.clone().unwrap_or_default();
+                self.settings_api_key.input = self.jupiter_api_key.clone().unwrap_or_default();
                 self.status_line = format!(
                     "Jupiter key {} · Enter save · empty clears · Esc cancel",
                     Self::mask_key(&self.jupiter_api_key)
@@ -864,8 +1288,7 @@ impl App {
                 self.screen = Screen::SettingsApiKey;
                 self.settings_api_key = WizardState::new();
                 self.settings_api_key.step = SetupStep::Input;
-                self.settings_api_key.input =
-                    self.titan_api_key.clone().unwrap_or_default();
+                self.settings_api_key.input = self.titan_api_key.clone().unwrap_or_default();
                 self.status_line = format!(
                     "Titan key {} · Enter save · empty clears · Esc cancel",
                     Self::mask_key(&self.titan_api_key)
@@ -899,8 +1322,7 @@ impl App {
                 }
                 self.screen = Screen::Setup;
                 self.setup = WizardState::new();
-                self.status_line =
-                    "change wallet · ↑↓ choose · Enter · Esc quit".into();
+                self.status_line = "change wallet · ↑↓ choose · Enter · Esc quit".into();
             }
             SettingsItem::Back => {
                 self.screen = Screen::Positions;
@@ -942,7 +1364,7 @@ impl App {
                 self.status_line = if value.is_some() {
                     "Jupiter API key saved (sqlite)".into()
                 } else {
-                    "Jupiter API key cleared · keyless lite + throttle".into()
+                    "Jupiter API key cleared · keyless + throttle".into()
                 };
             }
             ApiKeyTarget::Titan => {
@@ -1049,6 +1471,7 @@ impl App {
         let db_path = self.store.as_ref().map(|s| s.path().to_path_buf());
         let price_mode = self.price_mode;
         let keys = self.price_keys();
+        let wallet = self.wallet;
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
         self.detail_loading = true;
@@ -1060,9 +1483,11 @@ impl App {
             let rpc = Rpc::new(&sol, &meter);
             let store = db_path.and_then(|p| Store::open(&p, false).ok());
             let api = Client::new(price_mode, keys);
-            let result = api.position_detail(&rpc, &row, store.as_ref(), refresh_meta);
+            // Always refresh wallet SOL/ATA with detail (SOL pairs change after wrap/unwrap).
+            let result =
+                api.position_detail(&rpc, &row, store.as_ref(), refresh_meta, wallet.as_ref());
             let _ = tx.send(BgFetchResult::Detail {
-                result,
+                result: Box::new(result),
                 meter,
             });
         });
@@ -1085,6 +1510,15 @@ impl App {
                 self.list_loading = false;
                 self.detail_loading = false;
                 self.load_started = None;
+                #[cfg(feature = "write")]
+                if let Some(c) = self.write_confirm.as_mut()
+                    && c.phase == crate::write_flow::ConfirmPhase::Busy
+                {
+                    c.phase = crate::write_flow::ConfirmPhase::Failed;
+                    c.last_error = Some("send interrupted".into());
+                    self.status_line = "send interrupted · Retry or Cancel".into();
+                    return false;
+                }
                 self.status_line = "fetch interrupted · press r to retry".into();
                 false
             }
@@ -1118,6 +1552,7 @@ impl App {
                             self.table_state.select(Some(0));
                         }
                         self.sync_table_selection_after_filter();
+                        // Positions list stays clean — no tx chatter in keys.
                         self.status_line = self.positions_status_line();
                     }
                     Err(e) => {
@@ -1126,23 +1561,92 @@ impl App {
                     }
                 }
             }
-            BgFetchResult::Detail {
-                result,
-                meter,
-            } => {
+            BgFetchResult::Detail { result, meter } => {
                 self.rpc_meter.merge(&meter);
                 self.detail_loading = false;
                 self.load_started = None;
-                match result {
+                match *result {
                     Ok(d) => {
+                        // Start zoomed out to full series (narrow fit was unreadable on SOL/USDC).
+                        let step = d.pool.tick_spacing.max(1) as i32;
+                        let span = (d.series_max_tick - d.series_min_tick).max(step);
+                        self.detail_chart_half_spacings = (span / step / 2)
+                            .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
                         self.detail = Some(d);
                         self.detail_error = None;
-                        self.status_line =
-                            "detail · p pubkey/Solscan · r refresh · ? help · Esc back".into();
+                        self.status_line = if self.writes_live() {
+                            "detail · full chart · + zoom in · 0 fit · m · Esc".into()
+                        } else {
+                            "detail · full chart · + zoom in · 0 fit · r · Esc".into()
+                        };
                     }
                     Err(e) => {
-                        self.detail_error = Some(format!("{e:#}"));
-                        self.status_line = "detail error · r retry · Esc back".into();
+                        let msg = format!("{e:#}");
+                        // Closed / burned position still in the stale list.
+                        if msg.contains("AccountNotFound") {
+                            if let Some(addr) = self.selected_row().map(|r| r.address) {
+                                self.positions.retain(|p| p.address != addr);
+                                self.sync_table_selection_after_filter();
+                            }
+                            self.detail = None;
+                            self.detail_error = None;
+                            self.screen = Screen::Positions;
+                            self.status_line =
+                                "position gone on-chain · dropped from list · r refresh".into();
+                        } else {
+                            self.detail_error = Some(msg);
+                            self.status_line = "detail error · r retry · Esc back".into();
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "write")]
+            BgFetchResult::Write { result, balances } => {
+                self.load_started = None;
+                match *result {
+                    Ok(out) => {
+                        let paid = out.paid_label();
+                        let op = self
+                            .write_confirm
+                            .as_ref()
+                            .map(|c| c.plan.op.label())
+                            .unwrap_or("tx");
+                        if let Some(store) = &self.store {
+                            let c = self.write_confirm.as_ref();
+                            let _ = store.record_write_tx(
+                                &out.signature,
+                                op,
+                                c.map(|x| x.plan.venue_label.as_str()),
+                                c.and_then(|x| x.position_pk.as_deref()),
+                                c.and_then(|x| x.pool_pk.as_deref()),
+                                Some(out.budget.priority_fee_lamports),
+                                Some(out.fee_lamports),
+                                out.sol_spent_lamports,
+                                c.map(|x| x.plan.summary.as_str()),
+                                Some(paid.as_str()),
+                            );
+                        }
+                        if let Some(c) = self.write_confirm.as_mut() {
+                            c.phase = crate::write_flow::ConfirmPhase::Done;
+                            c.signature = Some(out.signature.clone());
+                            c.budget_label = Some(out.budget.label());
+                            c.paid_label = Some(paid.clone());
+                            c.wallet_balances = balances.clone();
+                        }
+                        // Every landed tx changes SOL / ATA — apply to detail immediately.
+                        if let Some(bal) = balances {
+                            if let Some(d) = self.detail.as_mut() {
+                                d.wallet_balances = Some(bal);
+                            }
+                        }
+                        self.status_line = "landed · wallet balances updated · Enter back".into();
+                    }
+                    Err(e) => {
+                        if let Some(c) = self.write_confirm.as_mut() {
+                            c.phase = crate::write_flow::ConfirmPhase::Failed;
+                            c.last_error = Some(e.to_string());
+                        }
+                        self.status_line = "send failed · Retry or Cancel".into();
                     }
                 }
             }
@@ -1168,6 +1672,57 @@ impl App {
         let sel = self.table_state.selected()?;
         let idx = *self.filtered_indices().get(sel)?;
         self.positions.get(idx)
+    }
+
+    /// Zoom detail liquidity chart in (`+`) / out (`-`) / fit position (`0`).
+    pub fn detail_chart_zoom(&mut self, dir: i8) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let step = d.pool.tick_spacing.max(1) as i32;
+        let span = (d.series_max_tick - d.series_min_tick).max(step);
+        let max_half = (span / step / 2).max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+        let prev = self
+            .detail_chart_half_spacings
+            .min(max_half)
+            .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+        match dir {
+            1 => {
+                let next = ((prev * 2) / 3).max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+                self.detail_chart_half_spacings = if next >= prev {
+                    (prev - 1).max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN)
+                } else {
+                    next
+                };
+            }
+            -1 => {
+                self.detail_chart_half_spacings =
+                    (prev.saturating_mul(3) / 2).max(prev + 1).min(max_half);
+            }
+            _ => {
+                let cur = d.pool.tick_current_index;
+                let dist = (d.row.tick_lower - cur)
+                    .abs()
+                    .max((d.row.tick_upper - cur).abs())
+                    .max(step);
+                let need = ((dist * 5) / (step * 4) + 2)
+                    .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+                self.detail_chart_half_spacings = need.min(max_half);
+            }
+        }
+        let half = self
+            .detail_chart_half_spacings
+            .min(max_half)
+            .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+        self.status_line = if dir == 1 && half == prev {
+            format!("zoom min ±{half} · - wider · 0 fit")
+        } else if dir == -1 && half == prev {
+            format!("zoom full ±{half} · + tighter · 0 fit")
+        } else if half >= max_half {
+            format!("chart full ±{half} · + zoom in · 0 fit")
+        } else {
+            format!("chart ±{half}/{max_half} · +/- · 0 fit")
+        };
     }
 
     pub fn close_detail(&mut self) {
@@ -1318,7 +1873,7 @@ impl App {
         match self.rpc_offer.rpc_choice() {
             RpcChoice::KeepPublic => {
                 self.persist_rpc();
-                self.enter_positions();
+                self.maybe_write_consent_then_positions();
             }
             RpcChoice::UsePrivate => {
                 self.rpc_offer.step = SetupStep::Input;
@@ -1382,18 +1937,17 @@ impl App {
             return;
         }
         if rpc::is_public_rpc(raw) {
-            self.rpc_offer.error =
-                Some("that still looks like a public Solana endpoint".into());
+            self.rpc_offer.error = Some("that still looks like a public Solana endpoint".into());
             return;
         }
         self.rpc_url = raw.to_string();
         self.rpc_dirty = true;
         self.persist_rpc();
         self.rpc_offer.error = None;
-        self.enter_positions();
+        self.maybe_write_consent_then_positions();
     }
 
-    /// Hide Solscan overlay and restore the previous status (second `p`).
+    /// Hide pubkey overlay and restore the previous status (second `p`).
     fn restore_links_overlay(&mut self) {
         if self.links_overlay {
             if let Some(prev) = self.status_before_links.take() {
@@ -1409,39 +1963,37 @@ impl App {
         self.status_before_links = None;
     }
 
-    /// Toggle full position pubkey + Solscan in the status line (`p` · press again to hide).
+    /// Full position pubkey in status (`p` · again to hide). Never trimmed.
     pub fn toggle_selected_position_link(&mut self) {
         if self.links_overlay {
             self.restore_links_overlay();
             return;
         }
         let Some(row) = self.selected_row() else {
-            self.status_line = "select a position first · then p for pubkey / Solscan".into();
+            self.status_line = "select a position first · then p for full pubkey".into();
             return;
         };
         let pk = row.address.to_string();
-        let url = sol_clmm_manager::solscan_account_url(&row.address);
         self.status_before_links = Some(self.status_line.clone());
         self.links_overlay = true;
-        self.status_line = format!("position {pk} · {url} · p again to hide");
+        self.status_line = format!("position {pk} · p hide");
     }
 
+    /// Full position + pool pubkeys in status (`p` · again to hide).
     pub fn toggle_detail_position_link(&mut self) {
         if self.links_overlay {
             self.restore_links_overlay();
             return;
         }
         let Some(d) = &self.detail else {
-            self.status_line = "no detail loaded · p for pubkey / Solscan".into();
+            self.status_line = "no detail loaded · p for full pubkey".into();
             return;
         };
-        let pk = d.row.address.to_string();
-        let pos_url = sol_clmm_manager::solscan_account_url(&d.row.address);
-        let pool_url = sol_clmm_manager::solscan_account_url(&d.pool.address);
+        let pos = d.row.address.to_string();
+        let pool = d.pool.address.to_string();
         self.status_before_links = Some(self.status_line.clone());
         self.links_overlay = true;
-        self.status_line =
-            format!("position {pk} · {pos_url} · pool {pool_url} · p again to hide");
+        self.status_line = format!("position {pos} · pool {pool} · p hide");
     }
 
     pub fn select_next(&mut self) {
@@ -1450,7 +2002,11 @@ impl App {
         if len == 0 {
             return;
         }
-        let i = self.table_state.selected().map(|i| (i + 1) % len).unwrap_or(0);
+        let i = self
+            .table_state
+            .selected()
+            .map(|i| (i + 1) % len)
+            .unwrap_or(0);
         self.table_state.select(Some(i));
     }
 
@@ -1471,19 +2027,943 @@ impl App {
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
-}
 
-#[cfg(test)]
-mod privacy_tests {
-    use super::format_rpc_url;
+    #[cfg(feature = "write")]
+    pub fn write_settings_snapshot(&self) -> AppSettings {
+        AppSettings {
+            wallet_pubkey: self.wallet.map(|p| p.to_string()),
+            keypair_path: self.keypair_path.clone(),
+            rpc_url: Some(self.rpc_url.clone()),
+            privacy_trim: self.privacy_trim,
+            price_mode: Some(self.price_mode.as_setting().to_string()),
+            jupiter_api_key: self.jupiter_api_key.clone(),
+            titan_api_key: self.titan_api_key.clone(),
+            api_paid_fast: self.api_paid_fast,
+            write_allowed: self.write_allowed,
+            write_prompt_skip: self.write_prompt_skip,
+            swap_mode: Some(self.swap_mode.clone()),
+            tx_budget_mode: Some(self.budget_mode.clone()),
+            tx_cu_limit: None,
+            tx_tip_lamports: Some(self.tip_lamports),
+            tx_loaded_data: None,
+            tx_heap: None,
+            tx_cu_margin_bps: None,
+            tx_tip_floor: Some(0),
+            tx_tip_ceiling: Some(25_000),
+            dlmm_strategy: Some(self.dlmm_strategy.clone()),
+        }
+    }
 
-    #[test]
-    fn privacy_masks_host_and_drops_query() {
-        let u = "https://mainnet.helius-rpc.com/?api-key=SECRET";
-        assert_eq!(format_rpc_url(u, true), "https://main…");
-        let open = format_rpc_url(u, false);
-        assert!(open.starts_with("https://mainnet.helius-rpc.com"));
-        assert!(!open.contains("SECRET"));
+    #[cfg(feature = "write")]
+    fn write_settings_for_confirm(&self, tip_lamports: u64) -> AppSettings {
+        let mut s = self.write_settings_snapshot();
+        s.tx_tip_lamports = Some(tip_lamports);
+        s
+    }
+
+    #[cfg(feature = "write")]
+    pub fn open_create(&mut self) {
+        if !self.writes_live() {
+            self.status_line = if !sol_clmm_manager::WRITE_ENABLED {
+                "read-only build · --features write".into()
+            } else if self.write_allowed != Some(true) {
+                "writes disabled · settings → write access".into()
+            } else {
+                "create needs a keypair path · setup wallet from file".into()
+            };
+            return;
+        }
+        self.create = Some(
+            crate::write_flow::CreateWizard::new().with_swap_router(&self.swap_mode),
+        );
+        self.screen = Screen::CreatePosition;
+        self.status_line = "create position · Esc cancel".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn cancel_create(&mut self) {
+        self.create = None;
+        self.screen = Screen::Positions;
+        self.status_line = self.positions_status_line();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn create_fetch_pool(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let Some(wiz) = self.create.as_ref() else {
+            return;
+        };
+        let pool: Pubkey = match wiz.pool_input.trim().parse() {
+            Ok(p) => p,
+            Err(_) => {
+                if let Some(w) = self.create.as_mut() {
+                    w.on_preview_failed("invalid pool pubkey".into());
+                }
+                return;
+            }
+        };
+        let venue = wiz.venue();
+        self.status_line = format!("fetching {} pool {pool}…", venue.short());
+        let client = Client::new(self.price_mode, self.price_keys());
+        let wallet = self.wallet;
+        let result = {
+            let traced = Rpc::new(rpc, &self.rpc_meter);
+            let store = self.store.as_ref();
+            client.pool_preview(&traced, venue, &pool, wallet.as_ref(), store, true)
+        };
+        match result {
+            Ok(preview) => {
+                let sym = format!("{}/{}", preview.token_a.symbol, preview.token_b.symbol);
+                let active = preview.pool.tick_current_index;
+                let bal = preview
+                    .balances
+                    .as_ref()
+                    .map(|b| {
+                        b.summary_line(
+                            &preview.token_a.symbol,
+                            &preview.token_b.symbol,
+                            preview.token_a.decimals,
+                            preview.token_b.decimals,
+                        )
+                    })
+                    .unwrap_or_else(|| "balances ?".into());
+                if let Some(w) = self.create.as_mut() {
+                    w.on_preview_loaded(preview);
+                }
+                self.status_line = format!(
+                    "{sym} · active {active} · {bal} · ←→ ticks · +/- zoom · Enter"
+                );
+            }
+            Err(e) => {
+                if let Some(w) = self.create.as_mut() {
+                    w.on_preview_failed(e.to_string());
+                }
+                self.status_line = format!("pool fetch failed · {e}");
+            }
+        }
+    }
+
+    #[cfg(feature = "write")]
+    pub fn open_manage(&mut self) {
+        if !self.writes_live() {
+            self.status_line = if !sol_clmm_manager::WRITE_ENABLED {
+                "read-only build · --features write".into()
+            } else if self.write_allowed != Some(true) {
+                "writes disabled · settings → write access".into()
+            } else {
+                "manage needs a keypair path · setup wallet from file".into()
+            };
+            return;
+        }
+        if self.detail.is_none() {
+            self.status_line = "no detail loaded".into();
+            return;
+        }
+        self.manage_choice = 0;
+        self.screen = Screen::Manage;
+        self.status_line = "manage · ↑↓ · Enter · Esc · p full pubkey".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_select_next(&mut self) {
+        let n = ManageChoice::ALL.len();
+        self.manage_choice = (self.manage_choice + 1) % n;
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_select_prev(&mut self) {
+        let n = ManageChoice::ALL.len();
+        self.manage_choice = if self.manage_choice == 0 {
+            n - 1
+        } else {
+            self.manage_choice - 1
+        };
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_close(&mut self) {
+        self.screen = Screen::Detail;
+        self.status_line = if self.writes_live() {
+            "detail · m manage · p pubkey · r refresh · Esc".into()
+        } else {
+            "detail · Esc back".into()
+        };
+    }
+
+    #[cfg(feature = "write")]
+    pub fn toggle_manage_links(&mut self) {
+        if self.links_overlay {
+            self.restore_links_overlay();
+            return;
+        }
+        let Some(d) = &self.detail else {
+            return;
+        };
+        let pos = d.row.address.to_string();
+        let pool = d.pool.address.to_string();
+        self.status_before_links = Some(self.status_line.clone());
+        self.links_overlay = true;
+        self.status_line = format!("position {pos} · pool {pool} · p hide");
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_activate(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let choice = ManageChoice::ALL[self.manage_choice.min(ManageChoice::ALL.len() - 1)];
+        match choice {
+            ManageChoice::Deposit => self.open_manage_deposit(rpc),
+            ManageChoice::WrapSol => self.open_manage_wrap(rpc),
+            ManageChoice::UnwrapSol => self.detail_write_op(rpc, choice),
+            other => self.detail_write_op(rpc, other),
+        }
+    }
+
+    /// Fresh wallet SOL/ATA balances before wrap/swap/deposit (SOL pairs).
+    #[cfg(feature = "write")]
+    fn refresh_wallet_balances_for_detail(
+        &mut self,
+        rpc: &solana_client::rpc_client::RpcClient,
+    ) -> Option<sol_clmm_manager::WalletPoolBalances> {
+        let detail = self.detail.as_ref()?;
+        let owner = self.wallet?;
+        let traced = Rpc::new(rpc, &self.rpc_meter);
+        let bal = sol_clmm_manager::fetch_wallet_pool_balances(
+            &traced,
+            &owner,
+            detail.token_a.mint,
+            detail.token_b.mint,
+        )
+        .ok()?;
+        if let Some(d) = self.detail.as_mut() {
+            d.wallet_balances = Some(bal.clone());
+        }
+        Some(bal)
+    }
+
+    #[cfg(feature = "write")]
+    fn open_manage_deposit(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        if self.detail.is_none() {
+            self.status_line = "no detail loaded".into();
+            return;
+        }
+        // Re-fetch at start of mingling — native SOL vs WSOL may have changed.
+        let balances = self.refresh_wallet_balances_for_detail(rpc).or_else(|| {
+            self.detail
+                .as_ref()
+                .and_then(|d| d.wallet_balances.clone())
+        });
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
+        let wiz = crate::write_flow::ManageDepositWizard::from_detail(
+            detail,
+            self.swap_mode.clone(),
+            balances,
+        );
+        self.status_line = wiz.status_hint();
+        self.manage_deposit = Some(wiz);
+        self.screen = Screen::ManageDeposit;
+    }
+
+    #[cfg(feature = "write")]
+    fn open_manage_wrap(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        if self.detail.is_none() {
+            self.status_line = "no detail loaded".into();
+            return;
+        }
+        let balances = self.refresh_wallet_balances_for_detail(rpc).or_else(|| {
+            self.detail
+                .as_ref()
+                .and_then(|d| d.wallet_balances.clone())
+        });
+        let wiz = crate::write_flow::ManageWrapWizard::new(balances.as_ref());
+        self.status_line = wiz.status_hint();
+        self.manage_wrap = Some(wiz);
+        self.screen = Screen::ManageWrap;
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_wrap_back(&mut self) {
+        self.manage_wrap = None;
+        self.screen = Screen::Manage;
+        self.status_line = "manage · ↑↓ · Enter · Esc · p pubkey".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_wrap_submit(&mut self) {
+        let lamports = match self.manage_wrap.as_ref().map(|w| w.lamports()) {
+            Some(Ok(v)) => v,
+            Some(Err(e)) => {
+                if let Some(w) = self.manage_wrap.as_mut() {
+                    w.error = Some(e);
+                }
+                return;
+            }
+            None => return,
+        };
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let plan = sol_clmm_manager::plan_wrap_sol(payer.pubkey(), lamports);
+        let mut confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        if let Some(d) = &self.detail {
+            confirm.position_pk = Some(d.row.address.to_string());
+            confirm.pool_pk = Some(d.pool.address.to_string());
+            confirm.pool_label = Some(format!("{} / {}", d.token_a.symbol, d.token_b.symbol));
+        }
+        self.manage_wrap = None;
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.screen = Screen::WriteConfirm;
+        self.status_line = "wrap SOL · ↑↓ priority fee · Enter simulate".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_deposit_back(&mut self) {
+        let leave = self
+            .manage_deposit
+            .as_mut()
+            .map(|w| w.back())
+            .unwrap_or(true);
+        if leave {
+            self.manage_deposit = None;
+            self.screen = Screen::Manage;
+            self.status_line = "manage · ↑↓ · Enter · Esc · p pubkey".into();
+        } else if let Some(w) = &self.manage_deposit {
+            self.status_line = w.status_hint();
+        }
+    }
+
+    #[cfg(feature = "write")]
+    pub fn manage_deposit_advance(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let ready = {
+            let Some(w) = self.manage_deposit.as_mut() else {
+                return;
+            };
+            matches!(
+                w.advance(),
+                crate::write_flow::ManageDepositAdvance::Ready
+            )
+        };
+        if let Some(w) = &self.manage_deposit {
+            self.status_line = w.status_hint();
+        }
+        if ready {
+            self.submit_manage_deposit(rpc);
+        }
+    }
+
+    #[cfg(feature = "write")]
+    fn submit_manage_deposit(&mut self, _rpc: &solana_client::rpc_client::RpcClient) {
+        let Some(detail) = self.detail.clone() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        let Some(wiz) = self.manage_deposit.as_ref() else {
+            return;
+        };
+        let (amount_a, amount_b) = match wiz.amounts_raw() {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(w) = self.manage_deposit.as_mut() {
+                    w.error = Some(e);
+                }
+                return;
+            }
+        };
+        let shape = wiz.shape();
+        let swap_to_match = wiz.swap_to_match();
+        let slip = wiz.swap_slippage_bps();
+        let sol_leg = wiz.sol_leg();
+        let router = wiz.swap_router.clone();
+
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let mut settings = self.write_settings_for_confirm(tip);
+        settings.swap_mode = Some(router.clone());
+        self.swap_mode = router;
+        let client = Client::new(self.price_mode, self.price_keys());
+        let strategy = Some(Client::dlmm_strategy_from_settings(&settings));
+        let result = client.assemble_manage_deposit(
+            payer.pubkey(),
+            &detail,
+            amount_a,
+            amount_b,
+            shape,
+            swap_to_match,
+            slip,
+            sol_leg,
+            &settings,
+            strategy,
+        );
+        let (plan, router_tip) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(w) = self.manage_deposit.as_mut() {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("deposit plan failed · {e}");
+                return;
+            }
+        };
+        if plan.instructions.is_empty() {
+            self.status_line = "deposit: no instructions".into();
+            return;
+        }
+        let mut confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, router_tip);
+        confirm.position_pk = Some(detail.row.address.to_string());
+        confirm.pool_pk = Some(detail.pool.address.to_string());
+        confirm.pool_label = Some(format!(
+            "{} / {}",
+            detail.token_a.symbol, detail.token_b.symbol
+        ));
+        self.manage_deposit = None;
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.screen = Screen::WriteConfirm;
+        self.status_line = "deposit · ↑↓ priority fee · Enter simulate".into();
+    }
+
+    #[cfg(feature = "write")]
+    fn detail_write_op(
+        &mut self,
+        rpc: &solana_client::rpc_client::RpcClient,
+        kind: ManageChoice,
+    ) {
+        let Some(detail) = self.detail.clone() else {
+            self.status_line = "no detail loaded".into();
+            return;
+        };
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let _ = rpc; // plan only — simulate after tip pick
+        let authority = payer.pubkey();
+        let tip = self.tip_lamports;
+        let client = Client::new(self.price_mode, self.price_keys());
+        let sol_leg = if sol_clmm_manager::pool_has_wsol(
+            &detail.token_a.mint,
+            &detail.token_b.mint,
+        ) {
+            sol_clmm_manager::SolLegMode::NativeSol
+        } else {
+            sol_clmm_manager::SolLegMode::Wsol
+        };
+        let plan = match kind {
+            ManageChoice::Deposit | ManageChoice::WrapSol => {
+                unreachable!("opens wizard");
+            }
+            ManageChoice::UnwrapSol => Ok(sol_clmm_manager::plan_unwrap_sol(authority)),
+            ManageChoice::Claim => client.plan_claim(authority, &detail),
+            ManageChoice::Withdraw => {
+                let liq = detail.position_liquidity;
+                if liq == 0 {
+                    Err(anyhow::anyhow!("no liquidity to withdraw"))
+                } else {
+                    client.plan_withdraw(authority, &detail, liq, sol_leg)
+                }
+            }
+            ManageChoice::ClaimWithdraw => {
+                client.plan_claim_and_withdraw(authority, &detail, sol_leg)
+            }
+            ManageChoice::Close => client.plan_close_and_claim(authority, &detail, sol_leg),
+        };
+        let plan = match plan {
+            Ok(p) => p,
+            Err(e) => {
+                self.status_line = format!("{}: {e}", kind.title());
+                return;
+            }
+        };
+        if plan.instructions.is_empty() {
+            self.status_line = format!("{}: no instructions assembled", kind.title());
+            return;
+        }
+        let mut confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        confirm.position_pk = Some(detail.row.address.to_string());
+        confirm.pool_pk = Some(detail.pool.address.to_string());
+        confirm.pool_label = Some(format!(
+            "{} / {}",
+            detail.token_a.symbol, detail.token_b.symbol
+        ));
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.screen = Screen::WriteConfirm;
+        self.status_line = format!(
+            "{} · ↑↓ priority fee · Enter simulate",
+            kind.title()
+        );
+    }
+
+    #[cfg(feature = "write")]
+    pub fn create_submit_review(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let Some(wiz) = self.create.as_ref() else {
+            return;
+        };
+        let params = match wiz.build_params() {
+            Ok(p) => p,
+            Err(e) => {
+                if let Some(w) = self.create.as_mut() {
+                    w.error = Some(e);
+                }
+                return;
+            }
+        };
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "no keypair path".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let mint = crate::write_flow::new_position_signer();
+        let tip = self.tip_lamports;
+        let mut settings = self.write_settings_for_confirm(tip);
+        if let Some(w) = self.create.as_ref() {
+            settings.swap_mode = Some(w.swap_router.clone());
+            // Keep app settings in sync when user Tab-cycled router on create.
+            self.swap_mode = w.swap_router.clone();
+        }
+        let client = Client::new(self.price_mode, self.price_keys());
+        match client.assemble_create_position(
+            rpc,
+            payer.pubkey(),
+            &params,
+            mint.pubkey(),
+            &settings,
+        ) {
+            Ok((plan, router_tip)) => {
+                let confirm = crate::write_flow::WriteConfirm::with_tip(
+                    plan,
+                    vec![mint],
+                    tip,
+                    router_tip,
+                );
+                let _ = (rpc, payer, settings); // tip first · Enter simulates
+                self.create = None;
+                self.confirm_scroll = 0;
+                self.write_confirm = Some(confirm);
+                self.screen = Screen::WriteConfirm;
+                self.status_line = format!(
+                    "create · ↑↓ priority fee · Enter simulate · tip {}",
+                    tip_label(tip)
+                );
+            }
+            Err(e) => {
+                if let Some(w) = self.create.as_mut() {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("assemble: {e}");
+            }
+        }
+    }
+
+    #[cfg(feature = "write")]
+    pub fn write_confirm_send(&mut self, _rpc: &solana_client::rpc_client::RpcClient) {
+        if self.write_confirm.is_none() || self.bg_rx.is_some() {
+            return;
+        }
+        if !self
+            .write_confirm
+            .as_ref()
+            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Review)
+        {
+            return;
+        }
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                if let Some(c) = self.write_confirm.as_mut() {
+                    c.phase = crate::write_flow::ConfirmPhase::Failed;
+                    c.last_error = Some("no keypair path".into());
+                }
+                return;
+            }
+        };
+        // Validate keypair early so Failed shows without spinning the bar.
+        if let Err(e) = read_keypair_file(&path) {
+            if let Some(c) = self.write_confirm.as_mut() {
+                c.phase = crate::write_flow::ConfirmPhase::Failed;
+                c.last_error = Some(format!("keypair: {e}"));
+            }
+            return;
+        }
+        let tip = self.write_confirm.as_ref().expect("confirm").tip_lamports;
+        let router_tip = self.write_confirm.as_ref().expect("confirm").router_tip;
+        let settings = self.write_settings_for_confirm(tip);
+        let price_mode = self.price_mode;
+        let keys = self.price_keys();
+        let rpc_url = self.rpc_url.clone();
+        let plan = self.write_confirm.as_ref().expect("confirm").plan.clone();
+        let extra_bytes: Vec<[u8; 64]> = self
+            .write_confirm
+            .as_ref()
+            .expect("confirm")
+            .extra_signers
+            .iter()
+            .map(|k| k.to_bytes())
+            .collect();
+        // Mints for post-tx wallet balance refresh (detail or create preview).
+        let bal_owner = self.wallet;
+        let (mint_a, mint_b) = self
+            .detail
+            .as_ref()
+            .map(|d| (d.token_a.mint, d.token_b.mint))
+            .or_else(|| {
+                self.create.as_ref().and_then(|w| {
+                    w.preview
+                        .as_ref()
+                        .map(|p| (p.token_a.mint, p.token_b.mint))
+                })
+            })
+            .unzip();
+
+        if let Some(c) = self.write_confirm.as_mut() {
+            c.phase = crate::write_flow::ConfirmPhase::Busy;
+            c.last_error = None;
+            c.paid_label = None;
+            c.signature = None;
+            c.wallet_balances = None;
+        }
+        self.load_started = Some(Instant::now());
+        self.status_line = format!("sending · tip {} · waiting…", tip_label(tip));
+
+        let (tx, rx) = mpsc::channel();
+        self.bg_rx = Some(rx);
+        thread::spawn(move || {
+            let result = (|| -> anyhow::Result<sol_clmm_manager::SendOutcome> {
+                let rpc = solana_client::rpc_client::RpcClient::new(rpc_url.clone());
+                let payer = read_keypair_file(&path)
+                    .map_err(|e| anyhow::anyhow!("keypair: {e}"))?;
+                let extras: Vec<solana_keypair::Keypair> = extra_bytes
+                    .iter()
+                    .map(|b| {
+                        solana_keypair::Keypair::try_from(&b[..])
+                            .map_err(|e| anyhow::anyhow!("extra signer: {e}"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                let extra_refs: Vec<&solana_keypair::Keypair> = extras.iter().collect();
+                let client = Client::new(price_mode, keys);
+                client.execute_plan_signers(
+                    &rpc,
+                    &payer,
+                    &extra_refs,
+                    &plan,
+                    &settings,
+                    router_tip,
+                )
+            })();
+            // Every successful tx changes SOL / ATA — refresh immediately.
+            let balances = if result.is_ok() {
+                match (bal_owner, mint_a, mint_b) {
+                    (Some(owner), Some(ma), Some(mb)) => {
+                        let sol = rpc::connect(&rpc_url);
+                        let meter = RpcMeter::default();
+                        let traced = Rpc::new(&sol, &meter);
+                        sol_clmm_manager::fetch_wallet_pool_balances(&traced, &owner, ma, mb).ok()
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let _ = tx.send(BgFetchResult::Write {
+                result: Box::new(result),
+                balances,
+            });
+        });
+    }
+
+    /// `[` / `]` · cycle tip presets (Tip phase only — no sim until Enter).
+    #[cfg(feature = "write")]
+    pub fn write_confirm_nudge_tip(&mut self, up: bool) {
+        let Some(c) = self.write_confirm.as_mut() else {
+            return;
+        };
+        if c.phase != crate::write_flow::ConfirmPhase::Tip {
+            return;
+        }
+        c.nudge_tip(up);
+        let tip = c.tip_lamports;
+        self.tip_lamports = tip;
+        if let Some(store) = &self.store {
+            let _ = store.set_tx_tip_lamports(tip);
+        }
+        self.status_line = format!(
+            "priority fee → {} · Enter simulate · Esc cancel",
+            tip_label(tip)
+        );
+    }
+
+    /// Tip → Enter: run simulation · then Review to send.
+    #[cfg(feature = "write")]
+    pub fn write_confirm_simulate(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let (tip, router_tip, plan) = {
+            let Some(c) = self.write_confirm.as_mut() else {
+                return;
+            };
+            if c.phase != crate::write_flow::ConfirmPhase::Tip {
+                return;
+            }
+            c.apply_tip_choice();
+            (c.tip_lamports, c.router_tip, c.plan.clone())
+        };
+        self.tip_lamports = tip;
+        if let Some(store) = &self.store {
+            let _ = store.set_tx_tip_lamports(tip);
+        }
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                if let Some(c) = self.write_confirm.as_mut() {
+                    c.set_error("no keypair path".into());
+                    c.phase = crate::write_flow::ConfirmPhase::Failed;
+                }
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                if let Some(c) = self.write_confirm.as_mut() {
+                    c.set_error(format!("keypair: {e}"));
+                    c.phase = crate::write_flow::ConfirmPhase::Failed;
+                }
+                return;
+            }
+        };
+        let settings = self.write_settings_for_confirm(tip);
+        let client = Client::new(self.price_mode, self.price_keys());
+        let extras: Vec<&solana_keypair::Keypair> = self
+            .write_confirm
+            .as_ref()
+            .map(|c| c.extra_signers.iter().collect())
+            .unwrap_or_default();
+        self.status_line = "simulating…".into();
+        match client.prepare_and_simulate_signers(
+            rpc,
+            &payer,
+            &extras,
+            &plan,
+            &settings,
+            router_tip,
+        ) {
+            Ok((prepared, logs)) => {
+                if let Some(c) = self.write_confirm.as_mut() {
+                    c.budget_label = Some(prepared.budget.label());
+                    c.sim_preview = logs;
+                    c.phase = crate::write_flow::ConfirmPhase::Review;
+                    c.last_error = None;
+                    c.error_lines.clear();
+                }
+                self.confirm_scroll = 0;
+                self.status_line = format!(
+                    "sim OK · tip {} · Enter send · ↑↓ or [ ] back to tip",
+                    tip_label(tip)
+                );
+            }
+            Err(e) => {
+                if let Some(c) = self.write_confirm.as_mut() {
+                    c.set_error(e.to_string());
+                    c.phase = crate::write_flow::ConfirmPhase::Failed;
+                    c.choice = 0;
+                }
+                self.confirm_scroll = 0;
+                self.status_line =
+                    "sim failed · ↑↓ scroll logs · ←→ Change tip / Cancel".into();
+            }
+        }
+    }
+
+    /// From Review, `[` goes back to tip pick (clear sim).
+    #[cfg(feature = "write")]
+    pub fn write_confirm_back_to_tip(&mut self) {
+        let Some(c) = self.write_confirm.as_mut() else {
+            return;
+        };
+        if c.phase != crate::write_flow::ConfirmPhase::Review {
+            return;
+        }
+        c.phase = crate::write_flow::ConfirmPhase::Tip;
+        c.sim_preview.clear();
+        c.budget_label = None;
+        c.last_error = None;
+        c.error_lines.clear();
+        self.confirm_scroll = 0;
+        c.choice = TIP_PRESETS
+            .iter()
+            .position(|&p| p == c.tip_lamports)
+            .unwrap_or(3);
+        self.status_line = format!(
+            "↑↓ priority fee · Enter simulate · tip {}",
+            tip_label(c.tip_lamports)
+        );
+    }
+
+    #[cfg(feature = "write")]
+    pub fn confirm_scroll_by(&mut self, delta: i32) {
+        if delta < 0 {
+            self.confirm_scroll = self.confirm_scroll.saturating_sub((-delta) as u16);
+        } else {
+            self.confirm_scroll = self.confirm_scroll.saturating_add(delta as u16);
+        }
+    }
+
+    #[cfg(feature = "write")]
+    pub fn toggle_confirm_links(&mut self) {
+        if self.links_overlay {
+            self.restore_links_overlay();
+            return;
+        }
+        let Some(c) = &self.write_confirm else {
+            return;
+        };
+        let mut parts = Vec::new();
+        if let Some(pos) = &c.position_pk {
+            parts.push(format!("position {pos}"));
+        }
+        if let Some(pool) = &c.pool_pk {
+            parts.push(format!("pool {pool}"));
+        }
+        if let Some(sig) = &c.signature {
+            parts.push(format!("tx {sig}"));
+        }
+        if parts.is_empty() {
+            self.status_line = "nothing to copy yet".into();
+            return;
+        }
+        self.status_before_links = Some(self.status_line.clone());
+        self.links_overlay = true;
+        self.status_line = format!("{} · p hide", parts.join(" · "));
+    }
+
+    /// Failed → back to tip picker (do **not** auto-simulate — user must pick fee + Enter).
+    #[cfg(feature = "write")]
+    pub fn write_confirm_retry(&mut self, _rpc: &solana_client::rpc_client::RpcClient) {
+        let Some(c) = self.write_confirm.as_mut() else {
+            return;
+        };
+        c.phase = crate::write_flow::ConfirmPhase::Tip;
+        c.last_error = None;
+        c.error_lines.clear();
+        c.sim_preview.clear();
+        c.budget_label = None;
+        // Keep tip highlight on current preset.
+        c.choice = TIP_PRESETS
+            .iter()
+            .position(|&p| p == c.tip_lamports)
+            .unwrap_or(3);
+        self.confirm_scroll = 0;
+        self.status_line = format!(
+            "↑↓ priority fee · Enter simulate · tip {}",
+            tip_label(c.tip_lamports)
+        );
+    }
+
+    #[cfg(feature = "write")]
+    pub fn write_confirm_close(&mut self) {
+        self.dismiss_links_overlay();
+        let op = self.write_confirm.as_ref().map(|c| c.plan.op);
+        let position_pk = self
+            .write_confirm
+            .as_ref()
+            .and_then(|c| c.position_pk.clone());
+        let back_manage = self.detail.is_some() && position_pk.is_some();
+        let was_done = self
+            .write_confirm
+            .as_ref()
+            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Done);
+        let closed = was_done
+            && matches!(
+                op,
+                Some(sol_clmm_manager::WriteOp::CloseAndClaim)
+            );
+        let created = was_done
+            && matches!(
+                op,
+                Some(sol_clmm_manager::WriteOp::CreatePosition)
+            );
+        self.write_confirm = None;
+        self.confirm_scroll = 0;
+
+        // Close removes the account — never re-fetch detail. Drop stale row + refresh list.
+        if closed {
+            if let Some(pk) = position_pk.as_deref()
+                && let Ok(addr) = pk.parse::<Pubkey>()
+            {
+                self.positions.retain(|p| p.address != addr);
+                self.sync_table_selection_after_filter();
+            }
+            self.detail = None;
+            self.detail_error = None;
+            self.detail_loading = false;
+            self.screen = Screen::Positions;
+            self.request_list_refresh();
+            self.status_line = "closed · refreshing list…".into();
+            return;
+        }
+
+        // Create / other writes from list → refresh list.
+        if created || !back_manage {
+            self.screen = Screen::Positions;
+            self.status_line = self.positions_status_line();
+            if was_done {
+                self.request_list_refresh();
+                self.status_line = "landed · refreshing list…".into();
+            }
+            return;
+        }
+
+        // Claim / withdraw (position still exists) → manage + refresh detail.
+        self.screen = Screen::Manage;
+        self.status_line = "manage · ↑↓ · Enter · Esc · p full pubkey".into();
+        if was_done {
+            self.request_detail_refresh();
+        }
     }
 }
 
@@ -1515,3 +2995,16 @@ pub fn format_rpc_url(url: &str, privacy: bool) -> String {
     }
 }
 
+#[cfg(test)]
+mod privacy_tests {
+    use super::format_rpc_url;
+
+    #[test]
+    fn privacy_masks_host_and_drops_query() {
+        let u = "https://mainnet.helius-rpc.com/?api-key=SECRET";
+        assert_eq!(format_rpc_url(u, true), "https://main…");
+        let open = format_rpc_url(u, false);
+        assert!(open.starts_with("https://mainnet.helius-rpc.com"));
+        assert!(!open.contains("SECRET"));
+    }
+}

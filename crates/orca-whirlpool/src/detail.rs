@@ -1,26 +1,29 @@
 //! Fetch pool + tick arrays; claim-sim fees/rewards; snapshot volume; chart.
 
 use super::decode::{
-    decode_position, decode_tick_array, decode_whirlpool_full, tick_array_pda,
-    tick_array_start_index, TICK_ARRAY_SIZE,
+    TICK_ARRAY_SIZE, decode_position, decode_tick_array, decode_whirlpool_full, tick_array_pda,
+    tick_array_start_index,
 };
 use super::whirlpool_program_id;
 use anyhow::{Context, Result};
+use sol_clmm_manager::Venue;
 use sol_clmm_manager::clmm_math::{
     amounts_from_liquidity, build_liquidity_series, read_token_account_amount,
 };
-use sol_clmm_manager::detail::{PositionDetail, RewardInfo};
-use sol_clmm_manager::fees::{collect_fees_quote, fee_growth_inside, format_amount_usd, tokens_owed_delta};
+use sol_clmm_manager::detail::{PoolPreview, PositionDetail, RewardInfo};
+use sol_clmm_manager::fees::{
+    collect_fees_quote, fee_growth_inside, format_amount_usd, tokens_owed_delta,
+};
 use sol_clmm_manager::position::PositionRow;
 use sol_clmm_manager::pricing::{
-    estimate_position_usd_with_extra_mints, fetch_mint_usd_prices, raw_to_usd, PriceApiKeys,
-    PriceMode,
+    PriceApiKeys, PriceMode, estimate_position_usd_with_extra_mints, fetch_mint_usd_prices,
+    raw_to_usd,
 };
 use sol_clmm_manager::rpc::Rpc;
 use sol_clmm_manager::snapshots::PoolSnapshotInput;
 use sol_clmm_manager::store::Store;
-use sol_clmm_manager::tokens::{resolve_mints, resolve_tokens};
-use sol_clmm_manager::Venue;
+use sol_clmm_manager::tokens::{resolve_mints, resolve_tokens, resolve_tokens_with_keys};
+use sol_clmm_manager::wallet::fetch_wallet_pool_balances;
 use solana_pubkey::Pubkey;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,8 +51,13 @@ pub fn fetch_position_detail(
     let full = decode_whirlpool_full(row.pool, &pool_acc.data)?;
     let pool = full.stats.clone();
 
-    let (token_a, token_b) =
-        resolve_tokens(rpc, pool.token_mint_a, pool.token_mint_b, store, refresh_meta)?;
+    let (token_a, token_b) = resolve_tokens(
+        rpc,
+        pool.token_mint_a,
+        pool.token_mint_b,
+        store,
+        refresh_meta,
+    )?;
 
     let (amount_a, amount_b) = amounts_from_liquidity(
         position.liquidity,
@@ -59,9 +67,17 @@ pub fn fetch_position_detail(
     );
 
     let spacing = pool.tick_spacing;
+    // Wide chart context around spot (not just the position band).
+    let (wide_lo, wide_hi) = sol_clmm_manager::PoolPreview::default_range(
+        pool.tick_current_index,
+        spacing,
+        sol_clmm_manager::CHART_FETCH_HALF_SPACINGS,
+    );
+    let fetch_lo = wide_lo.min(position.tick_lower_index);
+    let fetch_hi = wide_hi.max(position.tick_upper_index);
     let starts = needed_array_starts(
-        position.tick_lower_index,
-        position.tick_upper_index,
+        fetch_lo,
+        fetch_hi,
         pool.tick_current_index,
         spacing,
     );
@@ -128,7 +144,7 @@ pub fn fetch_position_detail(
         .unwrap_or(0);
     let mut reward_mints = Vec::new();
     let mut reward_raw = [0u64; 3];
-    for i in 0..3 {
+    for (i, raw) in reward_raw.iter_mut().enumerate() {
         let ri = &full.reward_infos[i];
         if ri.mint == Pubkey::default() {
             continue;
@@ -137,9 +153,7 @@ pub fn fetch_position_detail(
         if pool.liquidity != 0 && ri.emissions_per_second_x64 != 0 {
             let dt = now.saturating_sub(full.reward_last_updated_timestamp);
             growth = growth.saturating_add(
-                ri.emissions_per_second_x64
-                    .saturating_mul(dt as u128)
-                    / pool.liquidity,
+                ri.emissions_per_second_x64.saturating_mul(dt as u128) / pool.liquidity,
             );
         }
         let (out_lo, out_hi) = match (tick_lower, tick_upper) {
@@ -159,8 +173,9 @@ pub fn fetch_position_detail(
             position.reward_infos[i].growth_inside_checkpoint,
             position.liquidity,
         );
-        reward_raw[i] = position.reward_infos[i].amount_owed.saturating_add(delta);
-        if reward_raw[i] > 0 || ri.emissions_per_second_x64 > 0 {
+        *raw = position.reward_infos[i].amount_owed.saturating_add(delta);
+        // Skip inactive / historical reward slots (no ATA create, no meta fetch).
+        if ri.claimable(*raw) {
             reward_mints.push(ri.mint);
         }
     }
@@ -176,12 +191,16 @@ pub fn fetch_position_detail(
         position.tick_lower_index,
         position.tick_upper_index,
         spacing,
+        sol_clmm_manager::CHART_FETCH_HALF_SPACINGS,
     );
 
     let (series_min_tick, series_max_tick) = if series.is_empty() {
-        (position.tick_lower_index, position.tick_upper_index)
+        (fetch_lo, fetch_hi)
     } else {
-        (series.first().unwrap().tick, series.last().unwrap().tick)
+        (
+            series.first().unwrap().tick.min(fetch_lo),
+            series.last().unwrap().tick.max(fetch_hi),
+        )
     };
     let series_max_liquidity = series.iter().map(|s| s.liquidity).max().unwrap_or(1).max(1);
 
@@ -323,9 +342,21 @@ pub fn fetch_position_detail(
         None
     };
 
+    // Claimable only: actively emitting, or inactive with owed > 0.
+    // Non-active empty slots → no CreateIdempotent reward ATA (rent).
+    let reward_vaults: Vec<(u8, Pubkey, Pubkey)> = full
+        .reward_infos
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| r.claimable(reward_raw[*i]))
+        .map(|(i, r)| (i as u8, r.mint, r.vault))
+        .collect();
+
     Ok(PositionDetail {
         row: row.clone(),
         pool,
+        position_mint: Some(position.position_mint),
+        reward_vaults,
         token_a: token_a.clone(),
         token_b: token_b.clone(),
         position_liquidity: position.liquidity,
@@ -399,6 +430,7 @@ pub fn fetch_position_detail(
             })
             .unwrap_or_else(|| "—".into()),
         period,
+        wallet_balances: None,
     })
 }
 
@@ -418,4 +450,100 @@ fn needed_array_starts(lower: i32, upper: i32, current: i32, spacing: u16) -> Ve
         t += span;
     }
     set.into_iter().collect()
+}
+
+/// Fetch pool + tick arrays around current for create-wizard range chart.
+pub fn fetch_pool_preview(
+    rpc: &Rpc<'_>,
+    pool: Pubkey,
+    wallet: Option<&Pubkey>,
+    store: Option<&Store>,
+    refresh_meta: bool,
+    price_keys: &PriceApiKeys,
+) -> Result<PoolPreview> {
+    let program = whirlpool_program_id();
+    let pool_acc = rpc.get_account(&pool).context("get whirlpool")?;
+    let full = decode_whirlpool_full(pool, &pool_acc.data)?;
+    let stats = full.stats.clone();
+    let (token_a, token_b) = resolve_tokens_with_keys(
+        rpc,
+        stats.token_mint_a,
+        stats.token_mint_b,
+        store,
+        refresh_meta,
+        Some(price_keys),
+    )?;
+
+    let spacing = stats.tick_spacing;
+    // Wide fetch window for chart zoom-out; tighter draft for the wizard selection.
+    let (fetch_lo, fetch_hi) = PoolPreview::default_range(
+        stats.tick_current_index,
+        spacing,
+        sol_clmm_manager::CHART_FETCH_HALF_SPACINGS,
+    );
+    let (draft_lo, draft_hi) = PoolPreview::default_range(stats.tick_current_index, spacing, 16);
+
+    let starts = needed_array_starts(fetch_lo, fetch_hi, stats.tick_current_index, spacing);
+    let addrs: Vec<Pubkey> = starts
+        .iter()
+        .map(|s| tick_array_pda(&pool, *s, &program))
+        .collect();
+    let accounts = rpc
+        .get_multiple_accounts(&addrs)
+        .context("get tick arrays")?;
+
+    let mut ticks = BTreeMap::new();
+    let mut arrays_loaded = 0usize;
+    for (maybe, start) in accounts.into_iter().zip(starts.iter()) {
+        let Some(account) = maybe else { continue };
+        let Ok(arr) = decode_tick_array(&account.data) else {
+            continue;
+        };
+        arrays_loaded += 1;
+        for (i, mut t) in arr.ticks.into_iter().enumerate() {
+            t.index = *start + (i as i32) * spacing as i32;
+            if t.initialized || t.liquidity_gross > 0 || t.liquidity_net != 0 {
+                ticks.insert(t.index, t);
+            }
+        }
+    }
+
+    let initialized_ticks = ticks.values().filter(|t| t.initialized).count();
+    // Wide series for zoom-out; draft range is only the selection + bar colors.
+    let series = build_liquidity_series(
+        &ticks,
+        stats.liquidity,
+        0,
+        stats.tick_current_index,
+        fetch_lo,
+        fetch_hi,
+        spacing,
+        16, // fetch already ±CHART_FETCH; small pad only
+    );
+    let series_max_liquidity = series.iter().map(|s| s.liquidity).max().unwrap_or(1).max(1);
+
+    let balances = wallet.and_then(|w| {
+        fetch_wallet_pool_balances(rpc, w, stats.token_mint_a, stats.token_mint_b).ok()
+    });
+
+    let mut preview = PoolPreview {
+        venue: Venue::OrcaWhirlpool,
+        pool: stats,
+        token_a,
+        token_b,
+        balances,
+        tick_lower: draft_lo,
+        tick_upper: draft_hi,
+        series,
+        series_max_liquidity,
+        series_min_tick: fetch_lo,
+        series_max_tick: fetch_hi,
+        arrays_loaded,
+        initialized_ticks,
+        chart_half_spacings: sol_clmm_manager::CHART_HALF_SPACINGS_DEFAULT,
+    };
+    preview.apply_range(draft_lo, draft_hi);
+    // Start zoomed out to the full fetched window (SOL/USDC needs context).
+    preview.zoom_full();
+    Ok(preview)
 }

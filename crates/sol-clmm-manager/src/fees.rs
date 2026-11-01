@@ -28,6 +28,7 @@ pub fn tokens_owed_delta(growth_inside: u128, checkpoint: u128, liquidity: u128)
 }
 
 /// Claimable = stored owed + growth delta since checkpoint.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_fees_quote(
     fee_owed: u64,
     growth_global: u128,

@@ -61,7 +61,12 @@ impl RpcCall {
         if self.note.is_empty() {
             format!("{}{mark}", self.method)
         } else {
-            format!("{}({}{})", self.method, self.note, if self.ok { "" } else { "!" })
+            format!(
+                "{}({}{})",
+                self.method,
+                self.note,
+                if self.ok { "" } else { "!" }
+            )
         }
     }
 }
@@ -190,23 +195,25 @@ impl<'a> Rpc<'a> {
 
     pub fn get_balance(&self, pubkey: &Pubkey) -> Result<u64> {
         let r = self.client.get_balance(pubkey);
-        self.meter.record("get_balance", short_pk(pubkey), r.is_ok());
+        self.meter
+            .record("get_balance", short_pk(pubkey), r.is_ok());
         r.context("get_balance")
     }
 
     pub fn get_account(&self, pubkey: &Pubkey) -> Result<Account> {
         let r = self.client.get_account(pubkey);
-        self.meter.record("get_account", short_pk(pubkey), r.is_ok());
+        self.meter
+            .record("get_account", short_pk(pubkey), r.is_ok());
         r.with_context(|| format!("get_account {}", pubkey))
     }
 
-    pub fn get_multiple_accounts(
-        &self,
-        pubkeys: &[Pubkey],
-    ) -> Result<Vec<Option<Account>>> {
+    pub fn get_multiple_accounts(&self, pubkeys: &[Pubkey]) -> Result<Vec<Option<Account>>> {
         let r = self.client.get_multiple_accounts(pubkeys);
-        self.meter
-            .record("get_multiple_accounts", format!("n={}", pubkeys.len()), r.is_ok());
+        self.meter.record(
+            "get_multiple_accounts",
+            format!("n={}", pubkeys.len()),
+            r.is_ok(),
+        );
         r.context("get_multiple_accounts")
     }
 
@@ -242,11 +249,8 @@ impl<'a> Rpc<'a> {
         let r = self
             .client
             .get_program_ui_accounts_with_config(program, config);
-        self.meter.record(
-            "get_program_accounts",
-            short_pk(program),
-            r.is_ok(),
-        );
+        self.meter
+            .record("get_program_accounts", short_pk(program), r.is_ok());
         let ui = r.context("get_program_accounts")?;
         let mut out = Vec::with_capacity(ui.len());
         for (pk, ui_acc) in ui {
@@ -258,10 +262,7 @@ impl<'a> Rpc<'a> {
         Ok(out)
     }
 
-    pub fn get_multiple_accounts_chunked(
-        &self,
-        keys: &[Pubkey],
-    ) -> Result<Vec<Option<Account>>> {
+    pub fn get_multiple_accounts_chunked(&self, keys: &[Pubkey]) -> Result<Vec<Option<Account>>> {
         const CHUNK: usize = 100;
         let mut out = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(CHUNK) {

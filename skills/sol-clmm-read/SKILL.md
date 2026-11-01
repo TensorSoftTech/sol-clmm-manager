@@ -20,7 +20,7 @@ let sol = connect(rpc_url);
 let rpc = Rpc::new(&sol, &meter);
 let client = Client::new(PriceMode::OnChain, PriceApiKeys::default());
 let rows = client.list_positions(&rpc, &wallet, Some(&store), VenueFilter::All, false)?;
-let detail = client.position_detail(&rpc, &rows[0], Some(&store), false)?;
+let detail = client.position_detail(&rpc, &rows[0], Some(&store), false, Some(&wallet))?;
 ```
 
 - `list_positions` — soft-fail per venue; merges Orca + Raydium + Meteora; claim-sim fees; enrich (USD/TVL + snapshots). Propagates enrich errors.
@@ -35,7 +35,7 @@ List and detail use **claim-sim** (`owed + Δfee_growth_inside`), not stale on-c
 
 ## Volume
 
-SQLite `pool_snapshots` (≤64/pool). Volume = Σ over consecutive segments `Δfee_growth × mean(L) / fee_rate`. Need ≥2 snaps (`r` refresh more than once). ≈24h = window × `86400/dt`. Rough — not an indexer.
+SQLite `pool_snapshots` (full history per pool; clean later if DB grows). Volume = Σ over consecutive segments `Δfee_growth × mean(L) / fee_rate`. Need ≥2 snaps (`r` refresh more than once). ≈24h = window × `86400/dt`. Rough — not an indexer.
 
 ## Venue filter
 

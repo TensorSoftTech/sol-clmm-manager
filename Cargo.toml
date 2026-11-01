@@ -19,18 +19,29 @@ repository = "https://github.com/local/sol-clmm-manager"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+base64 = "0.22"
+bs58 = "0.5"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.5", features = ["blocking", "json"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10"
 solana-account = "5.4.0"
 solana-account-decoder-client-types = { version = "=4.4.0", features = ["agave-unstable-api"] }
 solana-client = "=4.4.0"
+solana-commitment-config = "3.1.1"
+solana-hash = "4.7.0"
+solana-instruction = "4.0.0"
 solana-keypair = "4.0.0"
+solana-message = "5.1.0"
 solana-pubkey = { version = "4.4.0", features = ["curve25519"] }
+solana-signer = "4.0.0"
+solana-transaction = "5.1.0"
+solana-transaction-status-client-types = "=4.4.0"
 
 # workspace crates
 sol-clmm-manager = { path = "crates/sol-clmm-manager" }

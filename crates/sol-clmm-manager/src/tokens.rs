@@ -1,5 +1,6 @@
 //! Mint decimals + human symbol resolution (SQLite cache when available).
 
+use crate::pricing::PriceApiKeys;
 use crate::quotes::jupiter;
 use crate::rpc::Rpc;
 use crate::store::Store;
@@ -24,7 +25,19 @@ pub fn resolve_tokens(
     store: Option<&Store>,
     refresh: bool,
 ) -> Result<(TokenInfo, TokenInfo)> {
-    let map = resolve_mints(rpc, &[mint_a, mint_b], store, refresh)?;
+    resolve_tokens_with_keys(rpc, mint_a, mint_b, store, refresh, None)
+}
+
+/// Same as [`resolve_tokens`] with optional Jupiter/Titan keys (session overrides SQLite).
+pub fn resolve_tokens_with_keys(
+    rpc: &Rpc<'_>,
+    mint_a: Pubkey,
+    mint_b: Pubkey,
+    store: Option<&Store>,
+    refresh: bool,
+    keys: Option<&PriceApiKeys>,
+) -> Result<(TokenInfo, TokenInfo)> {
+    let map = resolve_mints_with_keys(rpc, &[mint_a, mint_b], store, refresh, keys)?;
     let a = map
         .get(&mint_a)
         .cloned()
@@ -38,15 +51,27 @@ pub fn resolve_tokens(
 
 /// Resolve many mints → symbol + decimals.
 ///
-/// Order: known table → SQLite (skip stubs) → mint account decimals →
-/// Jupiter Tokens v2 → Metaplex → short mint prefix.
+/// Order: known table → SQLite (non-stub) → Metaplex → Jupiter Tokens v2 (stubs)
+/// → short mint prefix. **Decimals** prefer SQLite / known, then always fill gaps
+/// from the on-chain **mint account via RPC** (SPL / Token-2022 layout).
 ///
-/// `refresh = true` skips SQLite reads (still writes back).
+/// `refresh = true` still **keeps** good SQLite symbols; only stubs / unknowns
+/// are re-fetched (and always written back).
 pub fn resolve_mints(
     rpc: &Rpc<'_>,
     mints: &[Pubkey],
     store: Option<&Store>,
     refresh: bool,
+) -> Result<HashMap<Pubkey, TokenInfo>> {
+    resolve_mints_with_keys(rpc, mints, store, refresh, None)
+}
+
+pub fn resolve_mints_with_keys(
+    rpc: &Rpc<'_>,
+    mints: &[Pubkey],
+    store: Option<&Store>,
+    refresh: bool,
+    keys: Option<&PriceApiKeys>,
 ) -> Result<HashMap<Pubkey, TokenInfo>> {
     let mut out: HashMap<Pubkey, TokenInfo> = HashMap::new();
     let mut missing: Vec<Pubkey> = Vec::new();
@@ -56,51 +81,39 @@ pub fn resolve_mints(
             continue;
         }
         if let Some(known) = known_symbol(mint) {
-            let decimals = if !refresh {
-                cached(store, mint)?
-                    .map(|c| c.decimals)
-                    .unwrap_or(0)
-            } else {
-                0
+            let decimals = cached(store, mint)?
+                .map(|c| c.decimals)
+                .filter(|d| *d > 0)
+                .or_else(|| known_decimals(mint))
+                .unwrap_or(0);
+            // Symbol known — still OK with decimals=0; RPC mint pass fills below.
+            let info = TokenInfo {
+                mint: *mint,
+                symbol: known,
+                decimals,
             };
-            // Still fetch mint account below if decimals unknown.
-            if decimals > 0 || known_decimals(mint).is_some() {
-                let d = if decimals > 0 {
-                    decimals
-                } else {
-                    known_decimals(mint).unwrap_or(0)
-                };
-                let info = TokenInfo {
-                    mint: *mint,
-                    symbol: known,
-                    decimals: d,
-                };
-                persist(store, &info);
-                out.insert(*mint, info);
-                continue;
-            }
-            missing.push(*mint);
+            out.insert(*mint, info);
             continue;
         }
-        if !refresh {
-            if let Some(info) = cached(store, mint)? {
-                if !is_stub_symbol(mint, &info.symbol) {
-                    out.insert(*mint, info);
-                    continue;
-                }
-            }
+        // Prefer real tickers already in SQLite (even when refresh=true).
+        if let Some(info) = cached(store, mint)?
+            && !is_stub_symbol(mint, &info.symbol)
+        {
+            out.insert(*mint, info);
+            continue;
         }
         missing.push(*mint);
     }
 
     if !missing.is_empty() {
         let accounts = get_multiple_accounts_chunked(rpc, &missing)?;
-        for (mint, maybe) in missing.iter().zip(accounts.into_iter()) {
+        for (mint, maybe) in missing.iter().zip(accounts) {
             let decimals = maybe
                 .as_ref()
                 .and_then(|a| read_mint_decimals(&a.data).ok())
                 .or_else(|| known_decimals(mint))
                 .unwrap_or(0);
+            // Prefer Metaplex metadata; leave stubs for Jupiter to overwrite.
             let symbol = known_symbol(mint)
                 .or_else(|| fetch_metaplex_symbol(rpc, mint))
                 .unwrap_or_else(|| short_symbol(mint));
@@ -123,17 +136,18 @@ pub fn resolve_mints(
         .collect();
 
     if !need_jup.is_empty() {
-        let (jup_key, paid_fast) = jupiter_settings(store);
-        if let Ok(meta) = jupiter::fetch_token_meta(
-            &need_jup,
-            jup_key.as_deref(),
-            paid_fast,
-            Some(rpc.meter()),
-        ) {
+        let (jup_key, paid_fast) = jupiter_settings(store, keys);
+        if let Ok(meta) =
+            jupiter::fetch_token_meta(&need_jup, jup_key.as_deref(), paid_fast, Some(rpc.meter()))
+        {
             for (mint, m) in meta {
-                if let Some(info) = out.get_mut(&mint) {
+                if let Some(info) = out.get_mut(&mint)
+                    && !m.symbol.trim().is_empty()
+                {
                     info.symbol = m.symbol;
-                    if let Some(d) = m.decimals {
+                    if let Some(d) = m.decimals
+                        && d > 0
+                    {
                         info.decimals = d;
                     }
                 }
@@ -141,13 +155,67 @@ pub fn resolve_mints(
         }
     }
 
+    // Always backfill missing decimals from on-chain mint accounts (RPC).
+    fill_decimals_from_rpc(rpc, &mut out)?;
+
     for info in out.values() {
         persist(store, info);
     }
     Ok(out)
 }
 
-fn jupiter_settings(store: Option<&Store>) -> (Option<String>, bool) {
+/// Read SPL / Token-2022 mint accounts for any entry still missing decimals.
+fn fill_decimals_from_rpc(
+    rpc: &Rpc<'_>,
+    out: &mut HashMap<Pubkey, TokenInfo>,
+) -> Result<()> {
+    let need: Vec<Pubkey> = out
+        .iter()
+        .filter(|(_, info)| info.decimals == 0)
+        .map(|(m, _)| *m)
+        .collect();
+    if need.is_empty() {
+        return Ok(());
+    }
+    let accounts = get_multiple_accounts_chunked(rpc, &need)?;
+    for (mint, maybe) in need.iter().zip(accounts) {
+        let Some(acc) = maybe else { continue };
+        let Ok(d) = read_mint_decimals(&acc.data) else {
+            continue;
+        };
+        if d == 0 {
+            // Rare (NFT-like); fall back to known table when RPC reports 0.
+            if let Some(kd) = known_decimals(mint)
+                && let Some(info) = out.get_mut(mint)
+            {
+                info.decimals = kd;
+            }
+            continue;
+        }
+        if let Some(info) = out.get_mut(mint) {
+            info.decimals = d;
+        }
+    }
+    Ok(())
+}
+
+fn jupiter_settings(
+    store: Option<&Store>,
+    keys: Option<&PriceApiKeys>,
+) -> (Option<String>, bool) {
+    if let Some(k) = keys {
+        let from_session = k.jupiter.clone().filter(|s| !s.is_empty());
+        if from_session.is_some() {
+            return (from_session, k.paid_fast);
+        }
+        // Fall through to SQLite when session has no key.
+        if let Some(store) = store
+            && let Ok(s) = store.load_settings()
+        {
+            return (s.jupiter_api_key, k.paid_fast || s.api_paid_fast);
+        }
+        return (None, k.paid_fast);
+    }
     let Some(store) = store else {
         return (None, false);
     };
@@ -220,10 +288,8 @@ fn short_symbol(mint: &Pubkey) -> String {
 
 fn fetch_metaplex_symbol(rpc: &Rpc<'_>, mint: &Pubkey) -> Option<String> {
     let program = Pubkey::from_str(METADATA_PROGRAM).ok()?;
-    let (pda, _) = Pubkey::find_program_address(
-        &[b"metadata", program.as_ref(), mint.as_ref()],
-        &program,
-    );
+    let (pda, _) =
+        Pubkey::find_program_address(&[b"metadata", program.as_ref(), mint.as_ref()], &program);
     let account = rpc.get_account(&pda).ok()?;
     parse_metadata_symbol(&account.data)
 }
@@ -258,10 +324,7 @@ fn parse_metadata_symbol(data: &[u8]) -> Option<String> {
 
 fn known_mints() -> HashMap<String, &'static str> {
     HashMap::from([
-        (
-            "So11111111111111111111111111111111111111112".into(),
-            "SOL",
-        ),
+        ("So11111111111111111111111111111111111111112".into(), "SOL"),
         (
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
             "USDC",
@@ -270,42 +333,24 @@ fn known_mints() -> HashMap<String, &'static str> {
             "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into(),
             "USDT",
         ),
-        (
-            "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So".into(),
-            "mSOL",
-        ),
+        ("mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So".into(), "mSOL"),
         (
             "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn".into(),
             "JitoSOL",
         ),
-        (
-            "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1".into(),
-            "bSOL",
-        ),
+        ("bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1".into(), "bSOL"),
         (
             "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263".into(),
             "BONK",
         ),
-        (
-            "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs".into(),
-            "ETH",
-        ),
+        ("7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs".into(), "ETH"),
         (
             "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3".into(),
             "PYTH",
         ),
-        (
-            "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN".into(),
-            "JUP",
-        ),
-        (
-            "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R".into(),
-            "RAY",
-        ),
-        (
-            "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE".into(),
-            "ORCA",
-        ),
+        ("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN".into(), "JUP"),
+        ("4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R".into(), "RAY"),
+        ("orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE".into(), "ORCA"),
     ])
 }
 

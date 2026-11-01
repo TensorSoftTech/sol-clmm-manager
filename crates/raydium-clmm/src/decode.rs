@@ -1,6 +1,6 @@
 //! Raydium CLMM account decoders (PersonalPosition / PoolState / TickArray / AmmConfig).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sol_clmm_manager::clmm_math::TickPoint;
 use sol_clmm_manager::pool::{IndexSpace, PoolStats};
 use solana_pubkey::Pubkey;
@@ -21,6 +21,7 @@ pub struct PositionReward {
 
 #[derive(Debug, Clone)]
 pub struct PersonalPosition {
+    pub nft_mint: Pubkey,
     pub pool_id: Pubkey,
     pub tick_lower: i32,
     pub tick_upper: i32,
@@ -32,6 +33,9 @@ pub struct PersonalPosition {
     pub reward_infos: [PositionReward; NUM_REWARDS],
 }
 
+/// Raydium `RewardState`: 0 uninit · 1 initialized · 2 opening · 3 ended.
+const REWARD_STATE_ENDED: u8 = 3;
+
 #[derive(Debug, Clone)]
 pub struct PoolRewardInfo {
     #[allow(dead_code)]
@@ -42,7 +46,36 @@ pub struct PoolRewardInfo {
     pub last_update_time: u64,
     pub emissions_per_second_x64: u128,
     pub token_mint: Pubkey,
+    pub token_vault: Pubkey,
     pub reward_growth_global_x64: u128,
+}
+
+impl PoolRewardInfo {
+    pub fn initialized(&self) -> bool {
+        self.token_mint != Pubkey::default() && self.token_vault != Pubkey::default()
+    }
+
+    /// Emitting now (not ended / not started / zero rate).
+    pub fn actively_emitting(&self, now: u64) -> bool {
+        if !self.initialized() || self.emissions_per_second_x64 == 0 {
+            return false;
+        }
+        if self.reward_state == REWARD_STATE_ENDED {
+            return false;
+        }
+        if self.open_time > 0 && now < self.open_time {
+            return false;
+        }
+        if self.end_time > 0 && now >= self.end_time {
+            return false;
+        }
+        true
+    }
+
+    /// Need collect + destination ATA: active schedule or unclaimed owed.
+    pub fn claimable(&self, amount_owed: u64, now: u64) -> bool {
+        self.initialized() && (amount_owed > 0 || self.actively_emitting(now))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +110,8 @@ pub fn decode_personal_position(data: &[u8]) -> Result<PersonalPosition> {
     if data[0..8] != PERSONAL_POSITION_DISC {
         bail!("personal position discriminator mismatch");
     }
-    let mut o = 8 + 1 + 32;
+    let mut o = 8 + 1; // disc + bump
+    let nft_mint = read_pubkey(data, &mut o)?;
     let pool_id = read_pubkey(data, &mut o)?;
     let tick_lower = read_i32(data, &mut o)?;
     let tick_upper = read_i32(data, &mut o)?;
@@ -105,6 +139,7 @@ pub fn decode_personal_position(data: &[u8]) -> Result<PersonalPosition> {
         slot.reward_amount_owed = read_u64(data, &mut o)?;
     }
     Ok(PersonalPosition {
+        nft_mint,
         pool_id,
         tick_lower,
         tick_upper,
@@ -153,6 +188,7 @@ pub fn decode_pool_header(data: &[u8]) -> Result<PoolHeader> {
             last_update_time: 0,
             emissions_per_second_x64: 0,
             token_mint: Pubkey::default(),
+            token_vault: Pubkey::default(),
             reward_growth_global_x64: 0,
         },
         PoolRewardInfo {
@@ -162,6 +198,7 @@ pub fn decode_pool_header(data: &[u8]) -> Result<PoolHeader> {
             last_update_time: 0,
             emissions_per_second_x64: 0,
             token_mint: Pubkey::default(),
+            token_vault: Pubkey::default(),
             reward_growth_global_x64: 0,
         },
         PoolRewardInfo {
@@ -171,6 +208,7 @@ pub fn decode_pool_header(data: &[u8]) -> Result<PoolHeader> {
             last_update_time: 0,
             emissions_per_second_x64: 0,
             token_mint: Pubkey::default(),
+            token_vault: Pubkey::default(),
             reward_growth_global_x64: 0,
         },
     ];
@@ -189,6 +227,7 @@ pub fn decode_pool_header(data: &[u8]) -> Result<PoolHeader> {
                 ),
                 // skip reward_total_emitted(8) + reward_claimed(8) = 16 → mint at +57
                 token_mint: Pubkey::new_from_array(data[base + 57..base + 89].try_into()?),
+                token_vault: Pubkey::new_from_array(data[base + 89..base + 121].try_into()?),
                 // mint(32)+vault(32)+authority(32)=96 → growth at +57+96 = +153
                 reward_growth_global_x64: u128::from_le_bytes(
                     data[base + 153..base + 169].try_into()?,

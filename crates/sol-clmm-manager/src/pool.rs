@@ -12,6 +12,7 @@ pub enum IndexSpace {
 }
 
 impl IndexSpace {
+    /// Raw price ratio (token B atomic / token A atomic) at index — no decimal adjust.
     pub fn price_at(self, index: i32) -> f64 {
         match self {
             Self::Tick => 1.0001_f64.powf(index as f64),
@@ -23,6 +24,15 @@ impl IndexSpace {
                 step.powf(index as f64)
             }
         }
+    }
+
+    /// Human B-per-A price (e.g. USDC per SOL) using mint decimals.
+    pub fn human_price_at(self, index: i32, decimals_a: u8, decimals_b: u8) -> f64 {
+        let raw = self.price_at(index);
+        if !(raw.is_finite() && raw > 0.0) {
+            return f64::NAN;
+        }
+        raw * 10f64.powi(i32::from(decimals_a) - i32::from(decimals_b))
     }
 
     pub fn label(self) -> &'static str {
@@ -37,6 +47,18 @@ impl IndexSpace {
             Self::Tick => "tick arrays",
             Self::Bin { .. } => "bin arrays",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_price_sol_usdc_tick() {
+        // tick -23503 → raw ≈ 0.095 · ×10^(9-6) ≈ 95 USDC/SOL
+        let p = IndexSpace::Tick.human_price_at(-23503, 9, 6);
+        assert!(p.is_finite() && p > 80.0 && p < 120.0, "got {p}");
     }
 }
 

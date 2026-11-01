@@ -10,11 +10,7 @@ pub enum Venue {
 }
 
 impl Venue {
-    pub const ALL: [Venue; 3] = [
-        Venue::OrcaWhirlpool,
-        Venue::RaydiumClmm,
-        Venue::MeteoraDlmm,
-    ];
+    pub const ALL: [Venue; 3] = [Venue::OrcaWhirlpool, Venue::RaydiumClmm, Venue::MeteoraDlmm];
 
     /// Brand: `Orca` · `Raydium` · `Meteora`.
     pub fn brand(self) -> &'static str {

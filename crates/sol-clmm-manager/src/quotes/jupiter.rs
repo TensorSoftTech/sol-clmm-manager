@@ -44,7 +44,11 @@ pub fn fetch_usd_prices(
     let fast = key.is_some() && paid_fast;
     throttle(fast)?;
 
-    let base = if key.is_some() { KEYED_PRICE } else { LITE_PRICE };
+    let base = if key.is_some() {
+        KEYED_PRICE
+    } else {
+        LITE_PRICE
+    };
     let ids = mints
         .iter()
         .map(|m| m.to_string())
@@ -84,10 +88,11 @@ pub fn fetch_usd_prices(
             let Ok(mint) = k.parse::<Pubkey>() else {
                 continue;
             };
-            if let Some(p) = v.get("usdPrice").and_then(|p| p.as_f64()) {
-                if p.is_finite() && p > 0.0 {
-                    out.insert(mint, p);
-                }
+            if let Some(p) = v.get("usdPrice").and_then(|p| p.as_f64())
+                && p.is_finite()
+                && p > 0.0
+            {
+                out.insert(mint, p);
             }
         }
         Ok(out)

@@ -1,12 +1,12 @@
 //! Pool snapshots in SQLite → period fee / volume estimates from deltas.
 //!
-//! Volume uses the **full** retained snapshot chain (≤64 points): sum of
-//! per-segment Δfee_growth × L / fee_rate, not just last→current.
+//! Volume uses the **full** snapshot chain (no retention cap — clean later if DB grows):
+//! sum of per-segment Δfee_growth × L / fee_rate, not just last→current.
 
 use crate::fees::estimate_volume_from_fees;
 use crate::venue::Venue;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use solana_pubkey::Pubkey;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -106,6 +106,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_from_query(
     observed_at: i64,
     slot: i64,
@@ -171,33 +172,24 @@ pub fn latest_snapshot(
     .context("latest pool snapshot")
 }
 
-/// Oldest → newest, up to `limit` retained rows for this pool.
+/// Oldest → newest for this pool (full history; no retention cap).
 pub fn list_snapshots(
     conn: &Connection,
     venue: Venue,
     pool: &Pubkey,
-    limit: usize,
 ) -> Result<Vec<PoolSnapshotRow>> {
-    let lim = limit.max(1) as i64;
     let mut stmt = conn
         .prepare(
             "SELECT observed_at, slot, fee_growth_global_a, fee_growth_global_b,
                     protocol_fee_owed_a, protocol_fee_owed_b, fee_rate, liquidity,
                     vault_a, vault_b, price_a_usd, price_b_usd
-             FROM (
-                SELECT observed_at, slot, fee_growth_global_a, fee_growth_global_b,
-                       protocol_fee_owed_a, protocol_fee_owed_b, fee_rate, liquidity,
-                       vault_a, vault_b, price_a_usd, price_b_usd, id
-                FROM pool_snapshots
-                WHERE venue = ?1 AND pool = ?2
-                ORDER BY observed_at DESC, id DESC
-                LIMIT ?3
-             )
+             FROM pool_snapshots
+             WHERE venue = ?1 AND pool = ?2
              ORDER BY observed_at ASC, id ASC",
         )
         .context("prepare list snapshots")?;
     let rows = stmt
-        .query_map(params![venue.short(), pool.to_string(), lim], |row| {
+        .query_map(params![venue.short(), pool.to_string()], |row| {
             Ok(row_from_query(
                 row.get(0)?,
                 row.get(1)?,
@@ -251,18 +243,6 @@ pub fn insert_snapshot(conn: &Connection, snap: &PoolSnapshotInput) -> Result<()
         ],
     )
     .context("insert pool snapshot")?;
-
-    // Keep last ~64 snapshots per pool.
-    conn.execute(
-        "DELETE FROM pool_snapshots WHERE id IN (
-            SELECT id FROM pool_snapshots
-            WHERE venue = ?1 AND pool = ?2
-            ORDER BY observed_at DESC, id DESC
-            LIMIT -1 OFFSET 64
-         )",
-        params![snap.venue.short(), snap.pool.to_string()],
-    )
-    .ok();
     Ok(())
 }
 
@@ -394,11 +374,11 @@ pub fn period_report_from_chain(
         } else {
             a.fee_rate
         };
-        if let Some(f) = seg_fees_usd {
-            if let Some(v) = estimate_volume_from_fees(f, fee_rate) {
-                volume_usd_sum += v;
-                any_volume = true;
-            }
+        if let Some(f) = seg_fees_usd
+            && let Some(v) = estimate_volume_from_fees(f, fee_rate)
+        {
+            volume_usd_sum += v;
+            any_volume = true;
         }
         segment_count += 1;
     }
@@ -477,8 +457,14 @@ pub fn period_report_from_delta(
     symbol_b: &str,
 ) -> PoolPeriodReport {
     let tip = input_as_row(next, now_secs());
-    period_report_from_chain(&[prev.clone(), tip], decimals_a, decimals_b, symbol_a, symbol_b)
-        .unwrap_or_default()
+    period_report_from_chain(
+        &[prev.clone(), tip],
+        decimals_a,
+        decimals_b,
+        symbol_a,
+        symbol_b,
+    )
+    .unwrap_or_default()
 }
 
 /// Record snapshot and return period report over the full chain including this tip.
@@ -490,7 +476,7 @@ pub fn record_pool_snapshot(
     symbol_a: &str,
     symbol_b: &str,
 ) -> Result<Option<PoolPeriodReport>> {
-    let mut points = list_snapshots(conn, snap.venue, &snap.pool, 64)?;
+    let mut points = list_snapshots(conn, snap.venue, &snap.pool)?;
     points.push(input_as_row(snap, now_secs()));
     let report = period_report_from_chain(&points, decimals_a, decimals_b, symbol_a, symbol_b);
     insert_snapshot(conn, snap)?;
@@ -598,7 +584,7 @@ mod tests {
             )
             .unwrap();
         }
-        let pts = list_snapshots(&conn, Venue::OrcaWhirlpool, &pool, 64).unwrap();
+        let pts = list_snapshots(&conn, Venue::OrcaWhirlpool, &pool).unwrap();
         assert_eq!(pts.len(), 3);
         let r = period_report_from_chain(&pts, 0, 0, "A", "B").unwrap();
         assert_eq!(r.fees_a_raw, 120);

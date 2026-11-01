@@ -25,9 +25,7 @@ pub const RAYDIUM_AMM_CONFIG_INDICES: &[u16] = &[
 ];
 
 /// Meteora DLMM permissionless v1 bin steps to probe.
-pub const METEORA_BIN_STEPS: &[u16] = &[
-    1, 2, 5, 10, 15, 20, 25, 50, 80, 100, 125, 200, 250, 400,
-];
+pub const METEORA_BIN_STEPS: &[u16] = &[1, 2, 5, 10, 15, 20, 25, 50, 80, 100, 125, 200, 250, 400];
 
 /// Meteora DLMM v2 `base_factor` values paired with [`METEORA_BIN_STEPS`].
 pub const METEORA_BASE_FACTORS: &[u16] = &[10_000, 5_000, 2_000, 1_000, 500];

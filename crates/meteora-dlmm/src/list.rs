@@ -3,8 +3,8 @@
 //! Fees use claim-sim (pending + Δbin fee_per_token), not pending alone.
 
 use super::decode::{
-    bin_array_pda, bin_id_to_bin_array_index, claim_fees_from_bins, decode_bin_array,
-    decode_lb_pair_header, decode_position_v2, OWNER_OFFSET, POSITION_V2_DISC, POSITION_V2_LEN,
+    OWNER_OFFSET, POSITION_V2_DISC, POSITION_V2_LEN, bin_array_pda, bin_id_to_bin_array_index,
+    claim_fees_from_bins, decode_bin_array, decode_lb_pair_header, decode_position_v2,
 };
 use super::dlmm_program_id;
 use anyhow::Result;
@@ -55,8 +55,11 @@ pub fn list_positions(
     let mut pools = HashMap::new();
     let mut token_mints: HashSet<Pubkey> = HashSet::new();
     let mut vault_keys: Vec<Pubkey> = Vec::new();
-    for (pk, maybe) in pool_keys.iter().zip(pool_accounts.into_iter()) {
-        if let Some(h) = maybe.as_ref().and_then(|a| decode_lb_pair_header(&a.data).ok()) {
+    for (pk, maybe) in pool_keys.iter().zip(pool_accounts) {
+        if let Some(h) = maybe
+            .as_ref()
+            .and_then(|a| decode_lb_pair_header(&a.data).ok())
+        {
             token_mints.insert(h.mint_x);
             token_mints.insert(h.mint_y);
             vault_keys.push(h.reserve_x);
@@ -86,7 +89,7 @@ pub fn list_positions(
         .unwrap_or_default();
     // pool → bins
     let mut bins_by_pool: HashMap<Pubkey, BTreeMap<i32, _>> = HashMap::new();
-    for (pda, maybe) in array_addrs.iter().zip(array_accounts.into_iter()) {
+    for (pda, maybe) in array_addrs.iter().zip(array_accounts) {
         let Some(pool) = pda_pool.get(pda).copied() else {
             continue;
         };
@@ -96,7 +99,9 @@ pub fn list_positions(
         };
         let entry = bins_by_pool.entry(pool).or_default();
         for b in arr.bins {
-            if b.liquidity_supply > 0 || b.amount_x > 0 || b.amount_y > 0
+            if b.liquidity_supply > 0
+                || b.amount_x > 0
+                || b.amount_y > 0
                 || b.fee_amount_x_per_token_stored != 0
                 || b.fee_amount_y_per_token_stored != 0
             {
@@ -105,13 +110,15 @@ pub fn list_positions(
         }
     }
 
-    let vault_accounts = rpc.get_multiple_accounts_chunked(&vault_keys).unwrap_or_default();
+    let vault_accounts = rpc
+        .get_multiple_accounts_chunked(&vault_keys)
+        .unwrap_or_default();
     let mut vault_amt: HashMap<Pubkey, u64> = HashMap::new();
-    for (pk, maybe) in vault_keys.iter().zip(vault_accounts.into_iter()) {
-        if let Some(a) = maybe.as_ref() {
-            if let Ok(amt) = read_token_account_amount(&a.data) {
-                vault_amt.insert(*pk, amt);
-            }
+    for (pk, maybe) in vault_keys.iter().zip(vault_accounts) {
+        if let Some(a) = maybe.as_ref()
+            && let Ok(amt) = read_token_account_amount(&a.data)
+        {
+            vault_amt.insert(*pk, amt);
         }
     }
 
@@ -132,41 +139,51 @@ pub fn list_positions(
         .into_iter()
         .map(|(addr, pos)| {
             let header = pools.get(&pos.lb_pair);
-            let (mint_a, mint_b, active, fee_rate, bin_step, va, vb, fee_growth_a, fee_growth_b, pool_l) =
-                match header {
-                    Some(h) => {
-                        let mut fee = (h.base_factor as u64)
-                            .saturating_mul(h.bin_step as u64)
-                            .saturating_mul(10);
-                        for _ in 0..h.base_fee_power_factor.min(8) {
-                            fee = fee.saturating_mul(10);
-                        }
-                        let bins = bins_by_pool.get(&pos.lb_pair);
-                        let mut pool_l: u128 = 0;
-                        let mut fga: u128 = 0;
-                        let mut fgb: u128 = 0;
-                        if let Some(map) = bins {
-                            for b in map.values() {
-                                pool_l = pool_l.saturating_add(b.liquidity_supply);
-                                fga = fga.saturating_add(b.fee_amount_x_per_token_stored);
-                                fgb = fgb.saturating_add(b.fee_amount_y_per_token_stored);
-                            }
-                        }
-                        (
-                            h.mint_x,
-                            h.mint_y,
-                            h.active_id,
-                            fee.min(u32::MAX as u64) as u32,
-                            h.bin_step,
-                            vault_amt.get(&h.reserve_x).copied().unwrap_or(0),
-                            vault_amt.get(&h.reserve_y).copied().unwrap_or(0),
-                            fga,
-                            fgb,
-                            pool_l.max(1),
-                        )
+            let (
+                mint_a,
+                mint_b,
+                active,
+                fee_rate,
+                bin_step,
+                va,
+                vb,
+                fee_growth_a,
+                fee_growth_b,
+                pool_l,
+            ) = match header {
+                Some(h) => {
+                    let mut fee = (h.base_factor as u64)
+                        .saturating_mul(h.bin_step as u64)
+                        .saturating_mul(10);
+                    for _ in 0..h.base_fee_power_factor.min(8) {
+                        fee = fee.saturating_mul(10);
                     }
-                    None => (Pubkey::default(), Pubkey::default(), 0, 0, 0, 0, 0, 0, 0, 1),
-                };
+                    let bins = bins_by_pool.get(&pos.lb_pair);
+                    let mut pool_l: u128 = 0;
+                    let mut fga: u128 = 0;
+                    let mut fgb: u128 = 0;
+                    if let Some(map) = bins {
+                        for b in map.values() {
+                            pool_l = pool_l.saturating_add(b.liquidity_supply);
+                            fga = fga.saturating_add(b.fee_amount_x_per_token_stored);
+                            fgb = fgb.saturating_add(b.fee_amount_y_per_token_stored);
+                        }
+                    }
+                    (
+                        h.mint_x,
+                        h.mint_y,
+                        h.active_id,
+                        fee.min(u32::MAX as u64) as u32,
+                        h.bin_step,
+                        vault_amt.get(&h.reserve_x).copied().unwrap_or(0),
+                        vault_amt.get(&h.reserve_y).copied().unwrap_or(0),
+                        fga,
+                        fgb,
+                        pool_l.max(1),
+                    )
+                }
+                None => (Pubkey::default(), Pubkey::default(), 0, 0, 0, 0, 0, 0, 0, 1),
+            };
             let (sym_a, dec_a) = sym(&mint_a);
             let (sym_b, dec_b) = sym(&mint_b);
             let in_range = active >= pos.lower_bin && active <= pos.upper_bin;

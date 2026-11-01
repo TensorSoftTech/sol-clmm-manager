@@ -7,8 +7,8 @@ use crate::pool::{IndexSpace, PoolStats};
 use crate::quotes::{jupiter, titan};
 use crate::rpc::{Rpc, RpcMeter};
 use crate::stables::{
-    self, is_stablecoin, whirlpools_config, wsol_mint, METEORA_BASE_FACTORS, METEORA_BIN_STEPS,
-    PRICE_TICK_SPACINGS, RAYDIUM_AMM_CONFIG_INDICES,
+    self, METEORA_BASE_FACTORS, METEORA_BIN_STEPS, PRICE_TICK_SPACINGS, RAYDIUM_AMM_CONFIG_INDICES,
+    is_stablecoin, whirlpools_config, wsol_mint,
 };
 use crate::tokens::TokenInfo;
 use solana_pubkey::Pubkey;
@@ -343,6 +343,7 @@ fn decode_meteora_for_price(address: Pubkey, data: &[u8]) -> Option<PoolStats> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_position_usd(
     rpc: &Rpc<'_>,
     mode: PriceMode,
@@ -380,6 +381,7 @@ pub fn estimate_position_usd(
 /// Like [`estimate_position_usd`] but folds extra reward USD into `position_usd`
 /// and returns prices for arbitrary mints via the returned map side-channel…
 /// Callers that need reward mint prices should use [`fetch_mint_usd_prices`].
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_position_usd_with_extra_mints(
     rpc: &Rpc<'_>,
     mode: PriceMode,
@@ -437,11 +439,7 @@ pub fn raw_to_usd(raw: u128, decimals: u8, price: Option<f64>) -> Option<f64> {
         raw as f64 / 10f64.powi(decimals as i32)
     };
     let v = ui * p;
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
-    }
+    if v.is_finite() { Some(v) } else { None }
 }
 
 pub fn fetch_mint_usd_prices(
@@ -460,15 +458,14 @@ pub fn fetch_mint_usd_prices(
     match mode {
         PriceMode::Jupiter => {
             let mints: Vec<Pubkey> = tokens.iter().map(|t| t.mint).collect();
-            let map = jupiter::fetch_usd_prices(
-                &mints,
-                keys.jupiter.as_deref(),
-                keys.paid_fast,
-                meter,
-            )
-            .unwrap_or_default();
+            let map =
+                jupiter::fetch_usd_prices(&mints, keys.jupiter.as_deref(), keys.paid_fast, meter)
+                    .unwrap_or_default();
             for t in tokens {
-                out.insert(t.mint, token_usd_from_map(&map, &t.mint, PriceSource::Jupiter));
+                out.insert(
+                    t.mint,
+                    token_usd_from_map(&map, &t.mint, PriceSource::Jupiter),
+                );
             }
         }
         PriceMode::Titan => {
@@ -483,7 +480,10 @@ pub fn fetch_mint_usd_prices(
             )
             .unwrap_or_default();
             for t in tokens {
-                out.insert(t.mint, token_usd_from_map(&map, &t.mint, PriceSource::Titan));
+                out.insert(
+                    t.mint,
+                    token_usd_from_map(&map, &t.mint, PriceSource::Titan),
+                );
             }
         }
         PriceMode::OnChain => {
@@ -518,6 +518,7 @@ pub fn fetch_mint_usd_prices(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_usd_from_prices(
     mode: PriceMode,
     keys: &PriceApiKeys,
@@ -551,16 +552,21 @@ pub fn estimate_usd_from_prices(
 
     let amount_a_usd = price_a.price.map(|p| ui(amount_a, token_a.decimals) * p);
     let amount_b_usd = price_b.price.map(|p| ui(amount_b, token_b.decimals) * p);
-    let fees_a_usd = price_a.price.map(|p| ui(fee_a as u128, token_a.decimals) * p);
-    let fees_b_usd = price_b.price.map(|p| ui(fee_b as u128, token_b.decimals) * p);
+    let fees_a_usd = price_a
+        .price
+        .map(|p| ui(fee_a as u128, token_a.decimals) * p);
+    let fees_b_usd = price_b
+        .price
+        .map(|p| ui(fee_b as u128, token_b.decimals) * p);
 
     let mut sum = 0.0;
     let mut any = false;
-    for part in [amount_a_usd, amount_b_usd, fees_a_usd, fees_b_usd] {
-        if let Some(v) = part {
-            sum += v;
-            any = true;
-        }
+    for v in [amount_a_usd, amount_b_usd, fees_a_usd, fees_b_usd]
+        .into_iter()
+        .flatten()
+    {
+        sum += v;
+        any = true;
     }
 
     let pool_vault_a_usd = match (vault_a_raw, price_a.price) {
@@ -612,11 +618,7 @@ pub fn estimate_usd_from_prices(
     }
 }
 
-fn token_usd_from_map(
-    map: &HashMap<Pubkey, f64>,
-    mint: &Pubkey,
-    source: PriceSource,
-) -> TokenUsd {
+fn token_usd_from_map(map: &HashMap<Pubkey, f64>, mint: &Pubkey, source: PriceSource) -> TokenUsd {
     if is_stablecoin(mint) {
         return TokenUsd {
             price: Some(1.0),
@@ -720,17 +722,17 @@ fn price_onchain(
     }
 
     let wsol = wsol_mint();
-    if *mint != wsol {
-        if let Some(vs_sol) = price_in_pool_quote(rpc, mint, decimals, &wsol, 9) {
-            let sol_usd = price_onchain(rpc, &wsol, 9, cache);
-            if let Some(su) = sol_usd.price {
-                let t = TokenUsd {
-                    price: Some(vs_sol * su),
-                    source: PriceSource::SolHop,
-                };
-                cache.insert(*mint, t.clone());
-                return t;
-            }
+    if *mint != wsol
+        && let Some(vs_sol) = price_in_pool_quote(rpc, mint, decimals, &wsol, 9)
+    {
+        let sol_usd = price_onchain(rpc, &wsol, 9, cache);
+        if let Some(su) = sol_usd.price {
+            let t = TokenUsd {
+                price: Some(vs_sol * su),
+                source: PriceSource::SolHop,
+            };
+            cache.insert(*mint, t.clone());
+            return t;
         }
     }
 
@@ -804,13 +806,12 @@ fn consider_orca_pools(
     let Ok(accounts) = rpc.get_multiple_accounts(&pdas) else {
         return;
     };
-    for (pda, maybe) in pdas.iter().zip(accounts.into_iter()) {
+    for (pda, maybe) in pdas.iter().zip(accounts) {
         let Some(acc) = maybe else { continue };
         let Some(pool) = decode_whirlpool_for_price(*pda, &acc.data) else {
             continue;
         };
-        if let Some(usd) =
-            usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
+        if let Some(usd) = usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
         {
             bump_best(best, pool.liquidity, usd);
         }
@@ -835,7 +836,7 @@ fn consider_raydium_pools(
     let Ok(accounts) = rpc.get_multiple_accounts_chunked(&pdas) else {
         return;
     };
-    for (pda, maybe) in pdas.iter().zip(accounts.into_iter()) {
+    for (pda, maybe) in pdas.iter().zip(accounts) {
         let Some(acc) = maybe else { continue };
         let Some(pool) = decode_raydium_for_price(*pda, &acc.data) else {
             continue;
@@ -846,8 +847,7 @@ fn consider_raydium_pools(
         if !pair_ok {
             continue;
         }
-        if let Some(usd) =
-            usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
+        if let Some(usd) = usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
         {
             bump_best(best, pool.liquidity, usd);
         }
@@ -862,9 +862,7 @@ fn consider_meteora_pools(
     quote_decimals: u8,
     best: &mut Option<(u128, f64)>,
 ) {
-    let mut pdas = Vec::with_capacity(
-        METEORA_BIN_STEPS.len() * (1 + METEORA_BASE_FACTORS.len()),
-    );
+    let mut pdas = Vec::with_capacity(METEORA_BIN_STEPS.len() * (1 + METEORA_BASE_FACTORS.len()));
     for &bs in METEORA_BIN_STEPS {
         pdas.push(meteora_lb_pair_pda_v1(mint, quote, bs));
         for &bf in METEORA_BASE_FACTORS {
@@ -874,7 +872,7 @@ fn consider_meteora_pools(
     let Ok(accounts) = rpc.get_multiple_accounts_chunked(&pdas) else {
         return;
     };
-    for (pda, maybe) in pdas.iter().zip(accounts.into_iter()) {
+    for (pda, maybe) in pdas.iter().zip(accounts) {
         let Some(acc) = maybe else { continue };
         let Some(pool) = decode_meteora_for_price(*pda, &acc.data) else {
             continue;
@@ -884,8 +882,7 @@ fn consider_meteora_pools(
         if !pair_ok {
             continue;
         }
-        if let Some(usd) =
-            usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
+        if let Some(usd) = usd_per_mint_from_pool(&pool, mint, mint_decimals, quote, quote_decimals)
         {
             bump_best(best, pool.liquidity, usd);
         }
@@ -927,11 +924,7 @@ fn usd_per_mint_from_pool(
     if pool.token_mint_a == *mint && pool.token_mint_b == *quote {
         Some(p)
     } else if pool.token_mint_b == *mint && pool.token_mint_a == *quote {
-        if p > 0.0 {
-            Some(1.0 / p)
-        } else {
-            None
-        }
+        if p > 0.0 { Some(1.0 / p) } else { None }
     } else {
         None
     }

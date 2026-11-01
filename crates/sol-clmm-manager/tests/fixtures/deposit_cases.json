@@ -1,0 +1,329 @@
+{
+  "cases": [
+    {
+      "id": "wsol_usdc_tiny_usdc_sym",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "0.05",
+      "range_spacings": 1,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.35,
+        "frac_max": 0.65,
+        "legacy_raw_frac_min": 0.85,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.30,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_1_usdc_sym",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "1",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": 0.85,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_10_usdc_sym",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "10",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": 0.85,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_1000_usdc_sym",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "1000",
+      "range_spacings": 3,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": 0.85,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_0.01_sol_sym",
+      "pool": "wsol_usdc_150",
+      "shape": "single_a",
+      "amount_a_ui": "0.01",
+      "amount_b_ui": null,
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": true,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_usdc_a_heavy_band",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "20",
+      "range_spacings": 0,
+      "band": "a_heavy",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.70,
+        "frac_max": 0.99,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.01,
+        "ratio_err_max": 0.05
+      }
+    },
+    {
+      "id": "wsol_usdc_usdc_b_heavy_band",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "20",
+      "range_spacings": 0,
+      "band": "b_heavy",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.01,
+        "frac_max": 0.30,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.60,
+        "ratio_err_max": 0.05
+      }
+    },
+    {
+      "id": "wsol_usdc_usdc_above_range_no_swap",
+      "pool": "wsol_usdc_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "1",
+      "range_spacings": 0,
+      "band": "above_range",
+      "expect": {
+        "swap": false,
+        "in_is_a": null,
+        "frac_min": null,
+        "frac_max": null,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": false,
+        "funded_left_frac_min": null,
+        "ratio_err_max": null
+      }
+    },
+    {
+      "id": "wsol_usdc_sol_below_range_no_swap",
+      "pool": "wsol_usdc_150",
+      "shape": "single_a",
+      "amount_a_ui": "0.05",
+      "amount_b_ui": null,
+      "range_spacings": 0,
+      "band": "below_range",
+      "expect": {
+        "swap": false,
+        "in_is_a": null,
+        "frac_min": null,
+        "frac_max": null,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": false,
+        "funded_left_frac_min": null,
+        "ratio_err_max": null
+      }
+    },
+    {
+      "id": "wsol_usdt_7.5_usdt_sym",
+      "pool": "wsol_usdt_150",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "7.5",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": 0.85,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "wsol_usdc_80_0.2_usdc_sym",
+      "pool": "wsol_usdc_80",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "0.2",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.35,
+        "frac_max": 0.65,
+        "legacy_raw_frac_min": 0.80,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.30,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "cbbtc_usdc_50_usdc_sym",
+      "pool": "cbbtc_usdc_95k",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "50",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_max": 0.05,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "cbbtc_usdc_0.001_btc_sym",
+      "pool": "cbbtc_usdc_95k",
+      "shape": "single_a",
+      "amount_a_ui": "0.001",
+      "amount_b_ui": null,
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": true,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "cbbtc_usdc_100_usdc_open",
+      "pool": "cbbtc_usdc_95k",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "100",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_max": 0.05,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03,
+        "value_share_a_min": 0.35,
+        "value_share_a_max": 0.65
+      }
+    },
+    {
+      "id": "usdc_cbbtc_100_usdc_sym",
+      "pool": "usdc_cbbtc_inv",
+      "shape": "single_a",
+      "amount_a_ui": "100",
+      "amount_b_ui": null,
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": true,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "usdc_cbbtc_0.001_btc_sym",
+      "pool": "usdc_cbbtc_inv",
+      "shape": "single_b",
+      "amount_a_ui": null,
+      "amount_b_ui": "0.001",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": false,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    },
+    {
+      "id": "usdc_usdt_25_usdc_sym",
+      "pool": "usdc_usdt_peg",
+      "shape": "single_a",
+      "amount_a_ui": "25",
+      "amount_b_ui": null,
+      "range_spacings": 10,
+      "band": "symmetric",
+      "expect": {
+        "swap": true,
+        "in_is_a": true,
+        "frac_min": 0.40,
+        "frac_max": 0.60,
+        "legacy_raw_frac_min": null,
+        "open_both_legs": true,
+        "funded_left_frac_min": 0.35,
+        "ratio_err_max": 0.03
+      }
+    }
+  ]
+}

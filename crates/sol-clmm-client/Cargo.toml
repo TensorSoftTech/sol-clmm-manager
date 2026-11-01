@@ -6,6 +6,17 @@ license.workspace = true
 description = "Thin multi-venue Client API for Solana CLMM/DLMM reads (Orca · Raydium · Meteora)"
 readme = "../../README.md"
 
+[features]
+default = []
+write = [
+    "sol-clmm-manager/write",
+    "orca-whirlpool/write",
+    "raydium-clmm/write",
+    "meteora-dlmm/write",
+    "dep:solana-keypair",
+    "dep:solana-signer",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 solana-client = { workspace = true }
@@ -14,3 +25,5 @@ sol-clmm-manager = { workspace = true }
 orca-whirlpool = { workspace = true }
 raydium-clmm = { workspace = true }
 meteora-dlmm = { workspace = true }
+solana-keypair = { workspace = true, optional = true }
+solana-signer = { workspace = true, optional = true }

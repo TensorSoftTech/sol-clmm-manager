@@ -1,0 +1,90 @@
+{
+  "positions": [
+    {
+      "id": "wsol_usdc_mock_lp_narrow",
+      "pool": "wsol_usdc_150",
+      "range_spacings": 1,
+      "band": "symmetric",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 1,
+        "both_legs": true
+      }
+    },
+    {
+      "id": "wsol_usdc_mock_lp_wide",
+      "pool": "wsol_usdc_150",
+      "range_spacings": 8,
+      "band": "symmetric",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 1,
+        "both_legs": true
+      }
+    },
+    {
+      "id": "cbbtc_usdc_mock_lp",
+      "pool": "cbbtc_usdc_95k",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 1,
+        "both_legs": true
+      }
+    },
+    {
+      "id": "usdc_cbbtc_mock_lp",
+      "pool": "usdc_cbbtc_inv",
+      "range_spacings": 2,
+      "band": "symmetric",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 1,
+        "both_legs": true
+      }
+    },
+    {
+      "id": "usdc_usdt_mock_lp",
+      "pool": "usdc_usdt_peg",
+      "range_spacings": 20,
+      "band": "symmetric",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 1,
+        "both_legs": true
+      }
+    },
+    {
+      "id": "wsol_usdc_mock_lp_above_range",
+      "pool": "wsol_usdc_150",
+      "range_spacings": 0,
+      "band": "above_range",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 0,
+        "amount_a_max": 0,
+        "amount_b_min": 1,
+        "both_legs": false
+      }
+    },
+    {
+      "id": "wsol_usdc_mock_lp_below_range",
+      "pool": "wsol_usdc_150",
+      "range_spacings": 0,
+      "band": "below_range",
+      "liquidity": "1099511627776",
+      "expect": {
+        "amount_a_min": 1,
+        "amount_b_min": 0,
+        "amount_b_max": 0,
+        "both_legs": false
+      }
+    }
+  ]
+}

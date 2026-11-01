@@ -1,0 +1,70 @@
+{
+  "pools": [
+    {
+      "id": "wsol_usdc_150",
+      "name": "WSOL/USDC",
+      "symbol_a": "WSOL",
+      "symbol_b": "USDC",
+      "decimals_a": 9,
+      "decimals_b": 6,
+      "tick_spacing": 64,
+      "human_mid_b_per_a": 150.0,
+      "notes": "Orca-style SOL/USDC · 9/6 decimal trap (legacy over-swaps USDC)"
+    },
+    {
+      "id": "wsol_usdc_80",
+      "name": "WSOL/USDC@$80",
+      "symbol_a": "WSOL",
+      "symbol_b": "USDC",
+      "decimals_a": 9,
+      "decimals_b": 6,
+      "tick_spacing": 64,
+      "human_mid_b_per_a": 80.0,
+      "notes": "Cheaper SOL mid — same decimal trap"
+    },
+    {
+      "id": "wsol_usdt_150",
+      "name": "WSOL/USDT",
+      "symbol_a": "WSOL",
+      "symbol_b": "USDT",
+      "decimals_a": 9,
+      "decimals_b": 6,
+      "tick_spacing": 64,
+      "human_mid_b_per_a": 150.0,
+      "notes": "Same layout as WSOL/USDC"
+    },
+    {
+      "id": "cbbtc_usdc_95k",
+      "name": "cbBTC/USDC",
+      "symbol_a": "cbBTC",
+      "symbol_b": "USDC",
+      "decimals_a": 8,
+      "decimals_b": 6,
+      "tick_spacing": 64,
+      "human_mid_b_per_a": 95000.0,
+      "notes": "8/6 · legacy UNDER-swaps USDC (opposite of WSOL)"
+    },
+    {
+      "id": "usdc_cbbtc_inv",
+      "name": "USDC/cbBTC",
+      "symbol_a": "USDC",
+      "symbol_b": "cbBTC",
+      "decimals_a": 6,
+      "decimals_b": 8,
+      "tick_spacing": 64,
+      "human_mid_b_per_a": 0.000010526315789473684,
+      "notes": "Reversed mint order · human = BTC per USDC ≈ 1/95000"
+    },
+    {
+      "id": "usdc_usdt_peg",
+      "name": "USDC/USDT",
+      "symbol_a": "USDC",
+      "symbol_b": "USDT",
+      "decimals_a": 6,
+      "decimals_b": 6,
+      "tick_spacing": 1,
+      "human_mid_b_per_a": 1.0001,
+      "notes": "Stable 6/6 · legacy ≈ value-weighted"
+    }
+  ]
+}

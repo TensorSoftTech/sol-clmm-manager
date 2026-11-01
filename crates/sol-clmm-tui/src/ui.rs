@@ -5,11 +5,13 @@ use crate::app::{
 use crate::theme;
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table,
+};
 use sol_clmm_manager::rpc::{self, lamports_to_sol};
 use sol_clmm_manager::store::display_path;
 use sol_clmm_manager::{
-    format_price, format_usd, format_usd_axis, scale_u128, IndexSpace, LiquiditySample, TokenSide,
+    IndexSpace, LiquiditySample, TokenSide, format_price, format_usd, format_usd_axis, scale_u128,
 };
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -22,13 +24,634 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::DbSetup => draw_db_setup(frame, app),
         Screen::Setup => draw_setup(frame, app),
         Screen::RpcOffer => draw_rpc_offer(frame, app),
+        Screen::WriteConsent => draw_write_consent(frame, app),
         Screen::Positions => draw_positions_screen(frame, app),
         Screen::Settings => draw_settings(frame, app),
         Screen::SettingsRpc => draw_settings_rpc(frame, app),
         Screen::SettingsApiKey => draw_settings_api_key(frame, app),
         Screen::Detail => draw_detail(frame, app),
         Screen::Help => draw_help(frame, app),
+        #[cfg(feature = "write")]
+        Screen::Manage => draw_manage(frame, app),
+        #[cfg(not(feature = "write"))]
+        Screen::Manage => draw_detail(frame, app),
+        #[cfg(feature = "write")]
+        Screen::ManageDeposit => draw_manage_deposit(frame, app),
+        #[cfg(not(feature = "write"))]
+        Screen::ManageDeposit => draw_detail(frame, app),
+        #[cfg(feature = "write")]
+        Screen::ManageWrap => draw_manage_wrap(frame, app),
+        #[cfg(not(feature = "write"))]
+        Screen::ManageWrap => draw_detail(frame, app),
+        Screen::CreatePosition => draw_create_position(frame, app),
+        Screen::WriteConfirm => draw_write_confirm(frame, app),
     }
+}
+
+fn draw_create_position(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+
+    #[cfg(feature = "write")]
+    {
+        use crate::write_flow::CreateStep;
+        let show_chart = app
+            .create
+            .as_ref()
+            .is_some_and(|w| w.step == CreateStep::Range && w.preview.is_some());
+
+        let (progress_line, body_title, body_lines) = match &app.create {
+            Some(w) => {
+                let title = format!("create · {} · tx v1", w.step_title());
+                let lines = create_wizard_lines(w);
+                (create_progress_line(w.progress_index()), title, lines)
+            }
+            None => (
+                Line::from(""),
+                "create position · tx v1".into(),
+                vec![Line::from(Span::styled(
+                    "create wizard empty · Esc",
+                    theme::muted(),
+                ))],
+            ),
+        };
+
+        // Fit content height — avoid a huge empty bordered panel.
+        let body_inner = (body_lines.len() as u16).saturating_add(1).max(4);
+        let body_h = body_inner.saturating_add(2).min(area.height.saturating_sub(FOOTER_H + 4));
+
+        if show_chart {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Length(body_h.min(10)),
+                    Constraint::Min(8),
+                    Constraint::Length(FOOTER_H),
+                ])
+                .split(area);
+            frame.render_widget(
+                Paragraph::new(progress_line).block(panel("wizard", false)),
+                chunks[0],
+            );
+            frame.render_widget(
+                Paragraph::new(body_lines).block(panel(&body_title, false)),
+                chunks[1],
+            );
+            if let Some(w) = &app.create
+                && let Some(p) = &w.preview
+            {
+                let (view, view_max) = p.chart_series_view();
+                draw_liquidity_chart(
+                    frame,
+                    chunks[2],
+                    &view,
+                    view_max,
+                    p.pool.liquidity,
+                    None,
+                    p.pool.index_space,
+                    p.pool.tick_current_index,
+                    &p.token_a.symbol,
+                    &p.token_b.symbol,
+                    p.token_a.decimals,
+                    p.token_b.decimals,
+                    Some(p.tick_lower),
+                    Some(p.tick_upper),
+                    w.range_focus.label(),
+                    p.effective_half_spacings(),
+                );
+            }
+            draw_footer(frame, app, chunks[3]);
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Length(body_h),
+                    Constraint::Min(0),
+                    Constraint::Length(FOOTER_H),
+                ])
+                .split(area);
+            frame.render_widget(
+                Paragraph::new(progress_line).block(panel("wizard", false)),
+                chunks[0],
+            );
+            frame.render_widget(
+                Paragraph::new(body_lines).block(panel(&body_title, false)),
+                chunks[1],
+            );
+            // leftover space stays blank (no empty bordered void)
+            draw_footer(frame, app, chunks[3]);
+        }
+    }
+
+    #[cfg(not(feature = "write"))]
+    {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+            .split(area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "rebuild with --features write",
+                theme::danger(),
+            ))
+            .block(panel("create position · tx v1", false)),
+            chunks[0],
+        );
+        draw_footer(frame, app, chunks[1]);
+    }
+}
+
+#[cfg(feature = "write")]
+fn create_progress_line(cur: usize) -> Line<'static> {
+    use crate::write_flow::CreateWizard;
+    let mut spans = vec![Span::styled("path  ".to_string(), theme::header_key())];
+    for (i, stage) in CreateWizard::PROGRESS_STAGES.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" → ".to_string(), theme::dim()));
+        }
+        if i == cur {
+            spans.push(Span::styled(format!("[{stage}]"), theme::title()));
+        } else if i < cur {
+            spans.push(Span::styled((*stage).to_string(), theme::ok()));
+        } else {
+            spans.push(Span::styled((*stage).to_string(), theme::dim()));
+        }
+    }
+    Line::from(spans)
+}
+
+#[cfg(feature = "write")]
+fn style_wizard_lines(raw: Vec<String>) -> Vec<Line<'static>> {
+    raw.into_iter()
+        .map(|s| {
+            if let Some(value) = s.strip_prefix("▸▸") {
+                // ▸ is 3 UTF-8 bytes — never slice by byte index.
+                let display = if value.is_empty() {
+                    "type here…".to_string()
+                } else {
+                    value.to_string()
+                };
+                let value_style = if value.is_empty() {
+                    theme::dim()
+                } else {
+                    theme::body()
+                };
+                Line::from(vec![
+                    Span::styled("▸ ".to_string(), theme::input_cursor()),
+                    Span::styled(display, value_style),
+                    Span::styled("█".to_string(), theme::accent_blink()),
+                ])
+            } else if s.starts_with('!') {
+                Line::from(Span::styled(s, theme::danger()))
+            } else if s.starts_with('▸') {
+                Line::from(Span::styled(s, theme::title()))
+            } else if s.is_empty() {
+                Line::from("")
+            } else if s.starts_with("pubkey ok") || s.starts_with("example") {
+                Line::from(Span::styled(s, theme::muted()))
+            } else if s.starts_with("pool address") || s.starts_with("amount ") {
+                Line::from(Span::styled(s, theme::header_key()))
+            } else {
+                Line::from(Span::styled(s, theme::body()))
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "write")]
+fn create_wizard_lines(w: &crate::write_flow::CreateWizard) -> Vec<Line<'static>> {
+    style_wizard_lines(w.lines())
+}
+
+#[cfg(feature = "write")]
+fn draw_manage(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Min(10),
+            Constraint::Length(FOOTER_H),
+        ])
+        .split(area);
+
+    let mut head = vec![Line::from(Span::styled("manage position", theme::title()))];
+    if let Some(d) = &app.detail {
+        head.push(Line::from(vec![
+            Span::styled("position  ", theme::header_key()),
+            Span::styled(d.row.address.to_string(), theme::accent_text()),
+        ]));
+        head.push(Line::from(vec![
+            Span::styled("pool      ", theme::header_key()),
+            Span::styled(d.pool.address.to_string(), theme::ok()),
+            Span::styled(
+                format!("  · {} / {}", d.token_a.symbol, d.token_b.symbol),
+                theme::muted(),
+            ),
+        ]));
+        head.push(Line::from(vec![
+            Span::styled("liquidity ", theme::header_key()),
+            Span::styled(
+                format!("{}  +  {}", d.amount_a_ui, d.amount_b_ui),
+                theme::body(),
+            ),
+            Span::styled(
+                format!("  · L={}", d.position_liquidity),
+                theme::dim(),
+            ),
+        ]));
+        head.push(Line::from(Span::styled(
+            "p · full position + pool pubkey in status (copy)",
+            theme::muted(),
+        )));
+    }
+    frame.render_widget(Paragraph::new(head).block(panel("context", false)), chunks[0]);
+
+    let items: Vec<ListItem> = crate::app::ManageChoice::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mark = if i == app.manage_choice { "▸" } else { " " };
+            ListItem::new(vec![
+                Line::from(Span::styled(
+                    format!("{mark} {}", c.title()),
+                    if i == app.manage_choice {
+                        theme::accent_text()
+                    } else {
+                        theme::body()
+                    },
+                )),
+                Line::from(Span::styled(format!("    {}", c.detail()), theme::muted())),
+            ])
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(app.manage_choice));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(panel("↑↓ · Enter run · Esc back", false))
+            .highlight_symbol(""),
+        chunks[1],
+        &mut state,
+    );
+    draw_footer(frame, app, chunks[2]);
+}
+
+#[cfg(feature = "write")]
+fn draw_manage_deposit(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+        .split(area);
+
+    let lines = app
+        .manage_deposit
+        .as_ref()
+        .map(|w| style_wizard_lines(w.lines()))
+        .unwrap_or_else(|| vec![Line::from("no deposit wizard")]);
+    frame.render_widget(
+        Paragraph::new(lines).block(panel("deposit · existing position", false)),
+        chunks[0],
+    );
+    draw_footer(frame, app, chunks[1]);
+}
+
+#[cfg(feature = "write")]
+fn draw_manage_wrap(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+        .split(area);
+
+    let lines = app
+        .manage_wrap
+        .as_ref()
+        .map(|w| style_wizard_lines(w.lines()))
+        .unwrap_or_else(|| vec![Line::from("no wrap wizard")]);
+    frame.render_widget(
+        Paragraph::new(lines).block(panel("wrap SOL", false)),
+        chunks[0],
+    );
+    draw_footer(frame, app, chunks[1]);
+}
+
+fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let tip_phase = app.write_confirm.as_ref().is_some_and(|c| {
+        #[cfg(feature = "write")]
+        {
+            c.phase == crate::write_flow::ConfirmPhase::Tip
+        }
+        #[cfg(not(feature = "write"))]
+        {
+            false
+        }
+    });
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if tip_phase {
+            // Room for priority-fee preset list.
+            [
+                Constraint::Length(6),
+                Constraint::Min(12),
+                Constraint::Length(FOOTER_H),
+            ]
+        } else {
+            [
+                Constraint::Length(10),
+                Constraint::Min(8),
+                Constraint::Length(FOOTER_H),
+            ]
+        })
+        .split(area);
+
+    #[cfg(feature = "write")]
+    {
+        let busy = app
+            .write_confirm
+            .as_ref()
+            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy);
+        if busy {
+            draw_panel_load(
+                frame,
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+                    .split(area)[0],
+                app.load_bar_ratio(),
+                "confirm write",
+                "sending · waiting for confirmation…",
+            );
+            draw_footer(frame, app, chunks[2]);
+            return;
+        }
+    }
+
+    #[cfg(feature = "write")]
+    {
+        let Some(c) = &app.write_confirm else {
+            frame.render_widget(
+                Paragraph::new(Span::styled("confirm empty · Esc", theme::muted()))
+                    .block(panel("confirm write", false)),
+                chunks[0],
+            );
+            draw_footer(frame, app, chunks[2]);
+            return;
+        };
+
+        let mut head = vec![
+            Line::from(Span::styled(
+                format!("{} · {}", c.plan.op.label(), c.plan.venue_label),
+                theme::title(),
+            )),
+            Line::from(Span::styled(c.plan.summary.clone(), theme::body())),
+        ];
+        if let Some(pos) = c.position_pk.as_deref() {
+            head.push(Line::from(vec![
+                Span::styled("position  ", theme::header_key()),
+                Span::styled(pos.to_string(), theme::accent_text()),
+            ]));
+        }
+        if let Some(pool) = c.pool_pk.as_deref() {
+            let mut spans = vec![
+                Span::styled("pool      ", theme::header_key()),
+                Span::styled(pool.to_string(), theme::ok()),
+            ];
+            if let Some(lbl) = c.pool_label.as_deref() {
+                spans.push(Span::styled(format!("  · {lbl}"), theme::muted()));
+            }
+            head.push(Line::from(spans));
+        }
+        head.push(Line::from(Span::styled(
+            format!(
+                "ixs {} · {}",
+                c.plan.instructions.len(),
+                c.plan.expected.note
+            ),
+            theme::dim(),
+        )));
+        if c.phase != crate::write_flow::ConfirmPhase::Tip {
+            head.push(Line::from(Span::styled(
+                format!("priority fee · {}", crate::app::tip_label(c.tip_lamports)),
+                theme::accent_text(),
+            )));
+        }
+        if let Some(b) = c.budget_label.as_deref() {
+            head.push(Line::from(Span::styled(
+                format!("v1 config · {b}"),
+                theme::muted(),
+            )));
+        }
+        match c.phase {
+            crate::write_flow::ConfirmPhase::Tip => {
+                head.push(Line::from(Span::styled(
+                    "↑↓ pick priority fee · Enter simulate · Esc cancel",
+                    theme::accent_text(),
+                )));
+            }
+            crate::write_flow::ConfirmPhase::Review => {
+                head.push(Line::from(Span::styled(
+                    "sim OK · Enter send · [ back to tip · ↑↓ logs · Esc",
+                    theme::accent_text(),
+                )));
+            }
+            crate::write_flow::ConfirmPhase::Failed => {
+                head.push(Line::from(Span::styled(
+                    "sim failed · ←→ choice · ↑↓ scroll · Enter",
+                    theme::danger(),
+                )));
+                for (i, label) in crate::write_flow::WriteConfirm::failed_choices()
+                    .iter()
+                    .enumerate()
+                {
+                    let mark = if i == c.choice { "▸" } else { " " };
+                    head.push(Line::from(Span::styled(
+                        format!("{mark} {label}"),
+                        theme::body(),
+                    )));
+                }
+            }
+            crate::write_flow::ConfirmPhase::Done => {
+                head.push(Line::from(Span::styled("landed", theme::ok())));
+                if let Some(paid) = c.paid_label.as_deref() {
+                    head.push(Line::from(Span::styled(paid.to_string(), theme::ok())));
+                }
+                if let Some(bal) = c.wallet_balances.as_ref() {
+                    let (sa, sb, da, db) = app
+                        .detail
+                        .as_ref()
+                        .map(|d| {
+                            (
+                                d.token_a.symbol.as_str(),
+                                d.token_b.symbol.as_str(),
+                                d.token_a.decimals,
+                                d.token_b.decimals,
+                            )
+                        })
+                        .unwrap_or(("A", "B", 9, 6));
+                    head.push(Line::from(Span::styled(
+                        format!("wallet · {}", bal.summary_line(sa, sb, da, db)),
+                        theme::body(),
+                    )));
+                }
+                head.push(Line::from(Span::styled(
+                    "saved to sqlite · Enter back to manage",
+                    theme::muted(),
+                )));
+            }
+            crate::write_flow::ConfirmPhase::Busy => {}
+        }
+        frame.render_widget(
+            Paragraph::new(head).block(panel("confirm write", false)),
+            chunks[0],
+        );
+
+        if c.phase == crate::write_flow::ConfirmPhase::Tip {
+            let mut tip_lines = vec![
+                Line::from(Span::styled(
+                    "priority fee (tx v1) · selected below",
+                    theme::header_key(),
+                )),
+                Line::from(""),
+            ];
+            for (i, &preset) in crate::app::TIP_PRESETS.iter().enumerate() {
+                let mark = if i == c.choice { "▸" } else { " " };
+                let style = if i == c.choice {
+                    theme::title()
+                } else {
+                    theme::body()
+                };
+                tip_lines.push(Line::from(Span::styled(
+                    format!("{mark} {}", crate::app::tip_label(preset)),
+                    style,
+                )));
+            }
+            if let Some(rt) = c.router_tip {
+                tip_lines.push(Line::from(""));
+                tip_lines.push(Line::from(Span::styled(
+                    format!("router tip floor · {rt} lamports (Jupiter/Titan)"),
+                    theme::muted(),
+                )));
+            }
+            tip_lines.push(Line::from(""));
+            tip_lines.push(Line::from(Span::styled(
+                "no simulation yet — choose fee then Enter",
+                theme::muted(),
+            )));
+            frame.render_widget(
+                Paragraph::new(tip_lines).block(panel("↑↓ · Enter simulate", false)),
+                chunks[1],
+            );
+            draw_footer(frame, app, chunks[2]);
+            return;
+        }
+
+        let log_title = match c.phase {
+            crate::write_flow::ConfirmPhase::Failed => "simulation error · ↑↓ scroll",
+            crate::write_flow::ConfirmPhase::Done => "result",
+            _ => "simulation logs · ↑↓ scroll",
+        };
+        let mut log_lines: Vec<Line> = Vec::new();
+        match c.phase {
+            crate::write_flow::ConfirmPhase::Failed => {
+                for line in &c.error_lines {
+                    log_lines.push(Line::from(Span::styled(line.clone(), theme::danger())));
+                }
+                for log in &c.sim_preview {
+                    log_lines.push(Line::from(Span::styled(log.clone(), theme::dim())));
+                }
+            }
+            crate::write_flow::ConfirmPhase::Done => {
+                if let Some(sig) = c.signature.as_deref() {
+                    log_lines.push(Line::from(Span::styled(
+                        format!("tx {sig}"),
+                        theme::body(),
+                    )));
+                }
+                log_lines.push(Line::from(Span::styled(
+                    "p · full pubkey / tx in status · Enter / Esc back",
+                    theme::muted(),
+                )));
+            }
+            _ => {
+                for log in &c.sim_preview {
+                    log_lines.push(Line::from(Span::styled(log.clone(), theme::dim())));
+                }
+            }
+        }
+        let scroll = app.confirm_scroll;
+        frame.render_widget(
+            Paragraph::new(log_lines)
+                .scroll((scroll, 0))
+                .block(panel(log_title, false)),
+            chunks[1],
+        );
+        draw_footer(frame, app, chunks[2]);
+    }
+
+    #[cfg(not(feature = "write"))]
+    {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "rebuild with --features write",
+                theme::danger(),
+            ))
+            .block(panel("confirm write", false)),
+            chunks[0],
+        );
+        draw_footer(frame, app, chunks[2]);
+    }
+}
+
+fn draw_write_consent(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(9),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let intro = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Writes are a solid POC — burner / dust only (not production size).",
+            theme::warn(),
+        )),
+        Line::from(Span::styled(
+            "AUTOSWAP (Jupiter/Titan) does NOT work as intended — prefer no-swap.",
+            theme::warn(),
+        )),
+        Line::from(Span::styled(
+            "Claim / deposit / wrap paths look good as POC · always read sim logs.",
+            theme::dim(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "tx v1 · simulate always · keypair path may be saved (never secret bytes).",
+            theme::dim(),
+        )),
+        Line::from(Span::styled(
+            "SOL as native · we wrap/unwrap · Jupiter wrapAndUnwrapSol=false.",
+            theme::dim(),
+        )),
+    ])
+    .block(panel("allow writes? · POC", false));
+    frame.render_widget(intro, chunks[0]);
+
+    let items: Vec<ListItem> = App::write_consent_choices()
+        .iter()
+        .map(|s| ListItem::new(Line::from(Span::styled(format!("  {s}"), theme::body()))))
+        .collect();
+    let mut state = ListState::default().with_selected(Some(app.setup.selected.min(2)));
+    let list = List::new(items)
+        .block(panel("↑↓ · Enter", false))
+        .highlight_symbol("▸ ")
+        .highlight_style(theme::highlight());
+    frame.render_stateful_widget(list, chunks[1], &mut state);
+    draw_footer(frame, app, chunks[2]);
 }
 
 fn panel<'a>(title: &'a str, warn: bool) -> Block<'a> {
@@ -129,20 +752,19 @@ fn draw_db_setup(frame: &mut Frame, app: &mut App) {
                 .unwrap_or_default();
             let header = Paragraph::new(vec![
                 Line::from(Span::styled(
-                    format!("File already exists: {path}"),
+                    format!("SQLite already at {path}"),
                     theme::warn(),
                 )),
                 Line::from(Span::styled(
-                    "Use it (keep data) or overwrite (wipe).",
+                    "Load it (keep wallet / RPC / cache) or overwrite. Esc → pick another path.",
                     theme::muted(),
                 )),
             ]);
-            // reuse middle area for list + short header via nested layout
             let mid = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(4)])
                 .split(chunks[1]);
-            frame.render_widget(header.block(panel("existing DB", false)), mid[0]);
+            frame.render_widget(header.block(panel("load database", false)), mid[0]);
             let items: Vec<ListItem> = DbExistChoice::ALL
                 .iter()
                 .map(|c| {
@@ -154,7 +776,7 @@ fn draw_db_setup(frame: &mut Frame, app: &mut App) {
                 .collect();
             let mut state = ListState::default().with_selected(Some(app.db.selected));
             let list = List::new(items)
-                .block(panel("↑↓ · Enter", false))
+                .block(panel("↑↓ · Enter · Esc other path", false))
                 .highlight_symbol("▸ ")
                 .highlight_style(theme::highlight());
             frame.render_stateful_widget(list, mid[1], &mut state);
@@ -358,6 +980,11 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
                         app.jupiter_api_key.is_some(),
                         app.titan_api_key.is_some(),
                         app.api_paid_fast,
+                        &app.swap_mode,
+                        &app.budget_mode,
+                        app.tip_lamports,
+                        app.write_allowed,
+                        &app.dlmm_strategy,
                     )
                 ),
                 theme::body(),
@@ -384,7 +1011,7 @@ fn draw_settings_api_key(frame: &mut Frame, app: &mut App) {
     let (title, hint) = match app.api_key_target {
         ApiKeyTarget::Jupiter => (
             "Jupiter API key",
-            "optional · empty = keyless lite-api (throttled) · developers.jup.ag/portal",
+            "portal · api.jup.ag (Price + Swap v2 /build) · empty = keyless throttle · developers.jup.ag",
         ),
         ApiKeyTarget::Titan => (
             "Titan API key",
@@ -412,10 +1039,7 @@ fn draw_settings_api_key(frame: &mut Frame, app: &mut App) {
             theme::danger(),
         )));
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(panel(title, false)),
-        chunks[0],
-    );
+    frame.render_widget(Paragraph::new(lines).block(panel(title, false)), chunks[0]);
     draw_footer(frame, app, chunks[1]);
 }
 
@@ -481,10 +1105,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
 
     frame.render_widget(
         Paragraph::new(visible)
-            .block(panel(
-                "help · ↑↓ scroll · Esc / ? / h back",
-                false,
-            ))
+            .block(panel("help · ↑↓ scroll · Esc / ? / h back", false))
             .wrap(ratatui::widgets::Wrap { trim: false }),
         chunks[1],
     );
@@ -506,23 +1127,67 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
         out.push((s, t.to_string()));
     };
 
-    push(&mut out, HelpStyle::Warn, "Unofficial · WIP · not financial advice · funds at risk");
-    push(&mut out, HelpStyle::Dim, "Fees / amounts / ≈USD / volume are estimates. Cross-check before acting.");
+    push(
+        &mut out,
+        HelpStyle::Warn,
+        "Unofficial · WIP · not financial advice · funds at risk",
+    );
+    push(
+        &mut out,
+        HelpStyle::Dim,
+        "Fees / amounts / ≈USD / volume are estimates. Cross-check before acting.",
+    );
     push(&mut out, HelpStyle::Body, "");
 
     push(&mut out, HelpStyle::Title, "Navigation");
-    push(&mut out, HelpStyle::Key, "  ↑↓ / j k     move selection or scroll");
-    push(&mut out, HelpStyle::Key, "  Enter        confirm / open position detail");
-    push(&mut out, HelpStyle::Key, "  Esc          back (or quit from positions list)");
-    push(&mut out, HelpStyle::Key, "  q            quit (or back from detail / settings / help)");
-    push(&mut out, HelpStyle::Key, "  ? / h        this help (from list, detail, or settings)");
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  ↑↓ / j k     move selection or scroll",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Enter        confirm / open position detail",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Esc          back (or quit from positions list)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  q            quit (or back from detail / settings / help)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  ? / h        this help (from list, detail, or settings)",
+    );
     push(&mut out, HelpStyle::Body, "");
 
     push(&mut out, HelpStyle::Title, "Positions list");
-    push(&mut out, HelpStyle::Key, "  r            refresh list · prices · pool snapshots");
-    push(&mut out, HelpStyle::Key, "  v            cycle venue filter (all → Orca → Raydium → Meteora)");
-    push(&mut out, HelpStyle::Key, "  s            settings (RPC, wallet, USD price mode, API keys)");
-    push(&mut out, HelpStyle::Key, "  p            show selected position pubkey + Solscan (again to hide)");
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  r            refresh list · prices · pool snapshots",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  v            cycle venue filter (all → Orca → Raydium → Meteora)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  s            settings (RPC, wallet, USD price mode, API keys)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  p            full position pubkey in status (again to hide)",
+    );
     push(
         &mut out,
         HelpStyle::Body,
@@ -536,8 +1201,26 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(&mut out, HelpStyle::Body, "");
 
     push(&mut out, HelpStyle::Title, "Position detail");
-    push(&mut out, HelpStyle::Key, "  r            refresh this position (fees, rewards, chart, snapshot)");
-    push(&mut out, HelpStyle::Key, "  p            pubkey + Solscan for position / pool");
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  r            refresh this position (fees, rewards, chart, snapshot)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  p            full position + pool pubkey (copy from status)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  + / -        zoom in (tighter) / out (wider) · starts full-width",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  0            fit chart to position range",
+    );
     push(&mut out, HelpStyle::Key, "  Esc / q      back to list");
     push(
         &mut out,
@@ -547,7 +1230,12 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  Chart: colored bars = depth in range; ┃ = current tick/bin price.",
+        "  Chart: colored = in-range depth · dim = outside · ┃ = current · ▌▐ = bounds.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Dim,
+        "  Status shows zoom min/max when you hit the fetched window edge.",
     );
     push(&mut out, HelpStyle::Body, "");
 
@@ -555,7 +1243,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  Each list/detail refresh stores fee_growth + L + prices for unique pools (≤64 points).",
+        "  Each list/detail refresh stores fee_growth + L + prices for unique pools (full history).",
     );
     push(
         &mut out,
@@ -590,6 +1278,93 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
         HelpStyle::Body,
         "  titan     — Portal quotes (API key required).",
     );
+    push(&mut out, HelpStyle::Body, "");
+    push(
+        &mut out,
+        HelpStyle::Title,
+        "Writes — solid POC · burner wallet · autoswap WIP",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Claim / deposit / withdraw / close / create + SOL wrap are good as a POC.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  AUTOSWAP (Jupiter/Titan) does NOT work as intended — prefer no-swap deposits.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Dust only · read sim logs · read-only build if unsure (no --features write).",
+    );
+    push(&mut out, HelpStyle::Body, "");
+    push(
+        &mut out,
+        HelpStyle::Title,
+        "Writes (cargo --features write)",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  tx v1 only · CU + tip live in message config (no ComputeBudget ixs on explorers).",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  priority fee: ↑↓ on confirm tip screen · OFF / fixed / auto. Enter simulates.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  SQLite may store keypair path + pubkey — never secret key bytes.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  SOL: wrap at start · Jupiter wrapAndUnwrapSol=false · unwrap/close WSOL at end.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  DLMM deposits: curve · bid-ask · spot-tight · spot-spread · spot-wide.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  Detail: m manage → action → ↑↓ tip → Enter sim → Enter send. Tx saved in sqlite.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  Create: n · venue · pool pubkey · range chart · side/amount · review.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Range step: ←→ nudge · Tab lower/upper · H/L shift both · 1/2/3 = ±5/10/25%.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Range step: starts full-width · + tighter · - wider · 0 fit · mix = % by value.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  Deposit: 2-side or 1-side · 4/5/6 = 25/50/max · out-of-range correct side = no swap.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  Out-of-range wrong side = full swap; in-range 1-side = proportional ratio swap.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  1-side USDC: no SOL wrap · autoswap asks slippage (RTSE / default 50 / change bps).",
+    );
     push(
         &mut out,
         HelpStyle::Body,
@@ -601,7 +1376,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  Pubkey-only is enough for reads. Keypair path is for future writes (not enabled yet).",
+        "  Pubkey-only = reads. --keypair PATH may be saved (path only). Writes need --features write.",
     );
     push(
         &mut out,
@@ -747,22 +1522,42 @@ fn draw_detail(frame: &mut Frame, app: &mut App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("balances ", theme::header_key()),
+            Span::styled("in position ", theme::header_key()),
             Span::styled(
                 format!("{}  +  {}", d.amount_a_ui, d.amount_b_ui),
                 theme::ok(),
             ),
+            Span::styled(
+                if sol_clmm_manager::WRITE_ENABLED && app.writes_live() {
+                    "  · m manage"
+                } else {
+                    ""
+                },
+                theme::muted(),
+            ),
         ]),
+        Line::from({
+            let wallet_line = d
+                .wallet_balances
+                .as_ref()
+                .map(|b| {
+                    b.summary_line(
+                        &d.token_a.symbol,
+                        &d.token_b.symbol,
+                        d.token_a.decimals,
+                        d.token_b.decimals,
+                    )
+                })
+                .unwrap_or_else(|| "—".into());
+            vec![
+                Span::styled("wallet ", theme::header_key()),
+                Span::styled(wallet_line, theme::body()),
+            ]
+        }),
         Line::from(vec![
             Span::styled("fees (claim) ", theme::header_key()),
-            Span::styled(
-                format!("{}  +  {}", d.fee_a_ui, d.fee_b_ui),
-                theme::warn(),
-            ),
-            Span::styled(
-                format!("  · Σ {}", format_usd(d.fees_usd)),
-                theme::dim(),
-            ),
+            Span::styled(format!("{}  +  {}", d.fee_a_ui, d.fee_b_ui), theme::warn()),
+            Span::styled(format!("  · Σ {}", format_usd(d.fees_usd)), theme::dim()),
         ]),
         Line::from({
             if d.rewards.is_empty() {
@@ -775,10 +1570,7 @@ fn draw_detail(frame: &mut Frame, app: &mut App) {
                 vec![
                     Span::styled("rewards ", theme::header_key()),
                     Span::styled(parts.join("  +  "), theme::warn()),
-                    Span::styled(
-                        format!("  · Σ {}", format_usd(d.rewards_usd)),
-                        theme::dim(),
-                    ),
+                    Span::styled(format!("  · Σ {}", format_usd(d.rewards_usd)), theme::dim()),
                 ]
             }
         }),
@@ -863,7 +1655,7 @@ fn draw_detail(frame: &mut Frame, app: &mut App) {
                 format!("{}  +  {}", d.vault_a_ui, d.vault_b_ui),
                 theme::muted(),
             ),
-            Span::styled("  · p = Solscan · p again hides", theme::dim()),
+            Span::styled("  · p = full pubkey · p again hides", theme::dim()),
         ]),
         Line::from(vec![
             Span::styled(
@@ -908,23 +1700,38 @@ fn draw_detail(frame: &mut Frame, app: &mut App) {
     frame.render_widget(stats, chunks[1]);
 
     let pool_tvl = d.usd.as_ref().and_then(|u| u.pool_tvl_usd);
+    let (view_lo, view_hi) = sol_clmm_manager::chart_view_window(
+        d.pool.tick_current_index,
+        d.pool.tick_spacing,
+        app.detail_chart_half_spacings,
+        (d.series_min_tick, d.series_max_tick),
+    );
+    let (view, view_max) = sol_clmm_manager::slice_liquidity_series(&d.series, view_lo, view_hi);
     draw_liquidity_chart(
         frame,
         chunks[2],
-        &d.series,
-        d.series_max_liquidity,
+        &view,
+        view_max,
         d.pool.liquidity,
         pool_tvl,
         d.pool.index_space,
         d.pool.tick_current_index,
         &d.token_a.symbol,
         &d.token_b.symbol,
+        d.token_a.decimals,
+        d.token_b.decimals,
+        Some(d.row.tick_lower),
+        Some(d.row.tick_upper),
+        "",
+        app.detail_chart_half_spacings,
     );
 
     draw_footer(frame, app, chunks[3]);
 }
 
-/// Scaled bar chart: Y = liquidity (≈ USD when TVL known), X = price from ticks/bins.
+/// Scaled bar chart: Y = liquidity (≈ USD when TVL known), X = human B/A price.
+/// Optional `range_lo`/`range_hi` draw bound markers; `focus` labels which edge is active.
+#[allow(clippy::too_many_arguments)]
 fn draw_liquidity_chart(
     frame: &mut Frame,
     area: Rect,
@@ -936,6 +1743,12 @@ fn draw_liquidity_chart(
     current_tick: i32,
     sym_a: &str,
     sym_b: &str,
+    decimals_a: u8,
+    decimals_b: u8,
+    range_lo: Option<i32>,
+    range_hi: Option<i32>,
+    focus: &str,
+    zoom_half_spacings: i32,
 ) {
     let y_usd = pool_tvl_usd.is_some();
     let idx_lab = index_space.label();
@@ -943,9 +1756,13 @@ fn draw_liquidity_chart(
     // are clipped — never invent a Y max like TVL × (max_bar / pool_L).
     let pool_l_scaled = scale_u128(pool_liquidity.max(1)).max(1) as f64;
     let title = if y_usd {
-        format!("liquidity · Y ≈ USD · full height = pool TVL · X price from {idx_lab}")
+        format!(
+            "liquidity · Y ≈ USD · X = {sym_b}/{sym_a} · {idx_lab} · zoom ±{zoom_half_spacings} · +/-/0"
+        )
     } else {
-        format!("liquidity · Y = L · X price from {idx_lab} (USD after prices load)")
+        format!(
+            "liquidity · Y = relative depth · X = {sym_b}/{sym_a} · {idx_lab} · zoom ±{zoom_half_spacings} · +/-/0"
+        )
     };
     let block = panel(&title, false);
     let inner = block.inner(area);
@@ -989,31 +1806,32 @@ fn draw_liquidity_chart(
 
     let max_l = max_l.max(1) as f64;
     // Bar denominator: active pool L in USD mode; series max otherwise.
-    let bar_denom = if y_usd {
-        pool_l_scaled.max(1.0)
-    } else {
-        max_l
-    };
+    let bar_denom = if y_usd { pool_l_scaled.max(1.0) } else { max_l };
     let n = series.len();
     let cols = chart_w as usize;
-    // Column closest to current price (tick/bin).
-    let mut current_col: Option<usize> = None;
-    if n > 0 && cols > 0 {
+    // Column closest to a tick/bin index.
+    let col_for = |target: i32| -> Option<usize> {
+        if n == 0 || cols == 0 {
+            return None;
+        }
         let mut best_i = 0usize;
         let mut best_d = i32::MAX;
         for (i, s) in series.iter().enumerate() {
-            let d = (s.tick - current_tick).abs();
+            let d = (s.tick - target).abs();
             if d < best_d {
                 best_d = d;
                 best_i = i;
             }
         }
-        current_col = Some(if cols == 1 {
+        Some(if cols == 1 {
             0
         } else {
             best_i * (cols - 1) / (n.saturating_sub(1).max(1))
-        });
-    }
+        })
+    };
+    let current_col = col_for(current_tick);
+    let lo_col = range_lo.and_then(col_for);
+    let hi_col = range_hi.and_then(col_for);
     // map each column to a sample
     for col in 0..cols {
         let idx = if cols == 1 {
@@ -1074,6 +1892,30 @@ fn draw_liquidity_chart(
                 );
             }
         }
+        // Range bounds: ▌ lower · ▐ upper (accent when focused).
+        let is_lo = lo_col == Some(col) && !is_current;
+        let is_hi = hi_col == Some(col) && !is_current;
+        if is_lo || is_hi {
+            let focused = (is_lo && focus == "lower") || (is_hi && focus == "upper");
+            let style = if focused {
+                theme::accent_text()
+            } else {
+                theme::muted()
+            };
+            let ch = if is_lo { "▌" } else { "▐" };
+            for row in 0..chart_h {
+                let y = chart.y + chart_h - 1 - row;
+                frame.render_widget(
+                    Paragraph::new(Span::styled(ch, style)),
+                    Rect {
+                        x: chart.x + col as u16,
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                );
+            }
+        }
     }
 
     // Y scale: pin max / mid / 0 to top / middle / bottom (USD when TVL known).
@@ -1099,11 +1941,8 @@ fn draw_liquidity_chart(
             pad("$0".into()),
         )
     } else {
-        (
-            pad(compact_u64(max_l as u64)),
-            pad(compact_u64((max_l / 2.0) as u64)),
-            pad("0".into()),
-        )
+        // Raw CLMM L is not human money — show relative depth vs peak bar.
+        (pad("100%".into()), pad("50%".into()), pad("0%".into()))
     };
     let mid_row = (chart_h / 2) as usize;
     let bot_row = chart_h.saturating_sub(1) as usize;
@@ -1133,19 +1972,28 @@ fn draw_liquidity_chart(
         );
     }
 
-    // X scale: left / current / right
+    // X scale: left / current / right — human B per A (decimal-adjusted).
     let left = series.first().unwrap();
     let right = series.last().unwrap();
-    let left_p = format_price(index_space.price_at(left.tick));
-    let cur_p = format_price(index_space.price_at(current_tick));
-    let right_p = format_price(index_space.price_at(right.tick));
+    let left_p = format_price(index_space.human_price_at(left.tick, decimals_a, decimals_b));
+    let cur_p = format_price(index_space.human_price_at(current_tick, decimals_a, decimals_b));
+    let right_p = format_price(index_space.human_price_at(right.tick, decimals_a, decimals_b));
     let w = (chart_w as usize / 3).max(1);
     let scale_line = format!("{left_p:<w$}{cur_p:^w$}{right_p:>w$}");
+    let bound_hint = match (range_lo, range_hi) {
+        (Some(lo), Some(hi)) => {
+            let lo_p = format_price(index_space.human_price_at(lo, decimals_a, decimals_b));
+            let hi_p = format_price(index_space.human_price_at(hi, decimals_a, decimals_b));
+            format!("  · ▌{lo_p}…{hi_p}▐")
+        }
+        _ => String::new(),
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(format!("price {sym_b}/{sym_a}"), theme::dim()),
+                Span::styled(format!("{sym_b} per {sym_a}"), theme::dim()),
                 Span::styled("  · ┃ = current", theme::warn()),
+                Span::styled(bound_hint, theme::muted()),
             ]),
             Line::from(Span::styled(scale_line, theme::muted())),
         ]),
@@ -1211,10 +2059,8 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     ]);
 
     frame.render_widget(
-        Paragraph::new(vec![line1, line2]).block(panel(
-            "WIP · not financial advice · funds at risk",
-            true,
-        )),
+        Paragraph::new(vec![line1, line2])
+            .block(panel("WIP · not financial advice · funds at risk", true)),
         area,
     );
 }
@@ -1364,11 +2210,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             rpc_line,
-            if failed {
-                theme::warn()
-            } else {
-                theme::dim()
-            },
+            if failed { theme::warn() } else { theme::dim() },
         )))
         .block(
             Block::default()
@@ -1400,8 +2242,4 @@ fn compact_u128(v: u128) -> String {
     } else {
         v.to_string()
     }
-}
-
-fn compact_u64(v: u64) -> String {
-    compact_u128(v as u128)
 }

@@ -14,6 +14,7 @@ pub const DEFAULT_DB_FILE: &str = "sol-clmm.db";
 pub const ACTIVE_POINTER_FILE: &str = "active_db";
 
 const KEY_WALLET: &str = "wallet_pubkey";
+/// Filesystem path only — never keypair secret bytes.
 const KEY_KEYPAIR: &str = "keypair_path";
 const KEY_RPC: &str = "rpc_url";
 const KEY_PRIVACY: &str = "privacy_trim";
@@ -21,10 +22,23 @@ const KEY_PRICE_MODE: &str = "price_mode";
 const KEY_JUPITER_API: &str = "jupiter_api_key";
 const KEY_TITAN_API: &str = "titan_api_key";
 const KEY_API_PAID_FAST: &str = "api_paid_fast";
+const KEY_WRITE_ALLOWED: &str = "write_allowed";
+const KEY_WRITE_PROMPT_SKIP: &str = "write_prompt_skip";
+const KEY_SWAP_MODE: &str = "swap_mode";
+const KEY_BUDGET_MODE: &str = "tx_budget_mode";
+const KEY_CU_LIMIT: &str = "tx_cu_limit";
+const KEY_TIP_LAMPORTS: &str = "tx_tip_lamports";
+const KEY_LOADED_DATA: &str = "tx_loaded_data";
+const KEY_HEAP: &str = "tx_heap";
+const KEY_CU_MARGIN_BPS: &str = "tx_cu_margin_bps";
+const KEY_TIP_FLOOR: &str = "tx_tip_floor";
+const KEY_TIP_CEILING: &str = "tx_tip_ceiling";
+const KEY_DLMM_STRATEGY: &str = "dlmm_strategy";
 
 #[derive(Debug, Clone, Default)]
 pub struct AppSettings {
     pub wallet_pubkey: Option<String>,
+    /// Path to JSON keypair file (not the secret).
     pub keypair_path: Option<String>,
     pub rpc_url: Option<String>,
     pub privacy_trim: bool,
@@ -34,6 +48,23 @@ pub struct AppSettings {
     pub titan_api_key: Option<String>,
     /// Use short throttle when API keys are set (paid / higher plan).
     pub api_paid_fast: bool,
+    /// `None` = never asked; `Some(true/false)` = consent.
+    pub write_allowed: Option<bool>,
+    /// Skip the “allow write access?” prompt on startup.
+    pub write_prompt_skip: bool,
+    /// `jupiter` | `titan`
+    pub swap_mode: Option<String>,
+    /// `auto` | `manual` for tx v1 budget.
+    pub tx_budget_mode: Option<String>,
+    pub tx_cu_limit: Option<u32>,
+    pub tx_tip_lamports: Option<u64>,
+    pub tx_loaded_data: Option<u32>,
+    pub tx_heap: Option<u32>,
+    pub tx_cu_margin_bps: Option<u32>,
+    pub tx_tip_floor: Option<u64>,
+    pub tx_tip_ceiling: Option<u64>,
+    /// Last DLMM deposit strategy short name.
+    pub dlmm_strategy: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,8 +91,8 @@ impl Store {
                 .with_context(|| format!("overwrite remove {}", path.display()))?;
         }
 
-        let conn = Connection::open(path)
-            .with_context(|| format!("open sqlite {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -75,6 +106,20 @@ impl Store {
                 symbol     TEXT NOT NULL,
                 decimals   INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS write_txs (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at         TEXT NOT NULL,
+                signature          TEXT NOT NULL UNIQUE,
+                op                 TEXT NOT NULL,
+                venue              TEXT,
+                position           TEXT,
+                pool               TEXT,
+                tip_lamports       INTEGER,
+                fee_lamports       INTEGER,
+                sol_spent_lamports INTEGER,
+                summary            TEXT,
+                paid_label         TEXT
             );
             ",
         )
@@ -100,12 +145,7 @@ impl Store {
         symbol_b: &str,
     ) -> Result<Option<crate::snapshots::PoolPeriodReport>> {
         crate::snapshots::record_pool_snapshot(
-            &self.conn,
-            snap,
-            decimals_a,
-            decimals_b,
-            symbol_a,
-            symbol_b,
+            &self.conn, snap, decimals_a, decimals_b, symbol_a, symbol_b,
         )
     }
 
@@ -142,6 +182,33 @@ impl Store {
                 .get_setting(KEY_API_PAID_FAST)?
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
+            write_allowed: self
+                .get_setting(KEY_WRITE_ALLOWED)?
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+            write_prompt_skip: self
+                .get_setting(KEY_WRITE_PROMPT_SKIP)?
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            swap_mode: self.get_setting(KEY_SWAP_MODE)?,
+            tx_budget_mode: self.get_setting(KEY_BUDGET_MODE)?,
+            tx_cu_limit: self.get_setting(KEY_CU_LIMIT)?.and_then(|s| s.parse().ok()),
+            tx_tip_lamports: self
+                .get_setting(KEY_TIP_LAMPORTS)?
+                .and_then(|s| s.parse().ok()),
+            tx_loaded_data: self
+                .get_setting(KEY_LOADED_DATA)?
+                .and_then(|s| s.parse().ok()),
+            tx_heap: self.get_setting(KEY_HEAP)?.and_then(|s| s.parse().ok()),
+            tx_cu_margin_bps: self
+                .get_setting(KEY_CU_MARGIN_BPS)?
+                .and_then(|s| s.parse().ok()),
+            tx_tip_floor: self
+                .get_setting(KEY_TIP_FLOOR)?
+                .and_then(|s| s.parse().ok()),
+            tx_tip_ceiling: self
+                .get_setting(KEY_TIP_CEILING)?
+                .and_then(|s| s.parse().ok()),
+            dlmm_strategy: self.get_setting(KEY_DLMM_STRATEGY)?,
         })
     }
 
@@ -155,6 +222,7 @@ impl Store {
         Ok(())
     }
 
+    /// Persist keypair **file path** only — never secret key material.
     pub fn set_keypair_path(&self, path: &str) -> Result<()> {
         self.set_setting(KEY_KEYPAIR, path)
     }
@@ -187,6 +255,97 @@ impl Store {
 
     pub fn set_api_paid_fast(&self, on: bool) -> Result<()> {
         self.set_setting(KEY_API_PAID_FAST, if on { "1" } else { "0" })
+    }
+
+    pub fn set_write_allowed(&self, allowed: bool) -> Result<()> {
+        self.set_setting(KEY_WRITE_ALLOWED, if allowed { "1" } else { "0" })
+    }
+
+    pub fn set_write_prompt_skip(&self, skip: bool) -> Result<()> {
+        self.set_setting(KEY_WRITE_PROMPT_SKIP, if skip { "1" } else { "0" })
+    }
+
+    pub fn set_swap_mode(&self, mode: &str) -> Result<()> {
+        self.set_setting(KEY_SWAP_MODE, mode)
+    }
+
+    pub fn set_tx_budget_mode(&self, mode: &str) -> Result<()> {
+        self.set_setting(KEY_BUDGET_MODE, mode)
+    }
+
+    pub fn set_tx_cu_limit(&self, v: u32) -> Result<()> {
+        self.set_setting(KEY_CU_LIMIT, &v.to_string())
+    }
+
+    pub fn set_tx_tip_lamports(&self, v: u64) -> Result<()> {
+        self.set_setting(KEY_TIP_LAMPORTS, &v.to_string())
+    }
+
+    pub fn set_tx_loaded_data(&self, v: u32) -> Result<()> {
+        self.set_setting(KEY_LOADED_DATA, &v.to_string())
+    }
+
+    pub fn set_tx_heap(&self, v: u32) -> Result<()> {
+        self.set_setting(KEY_HEAP, &v.to_string())
+    }
+
+    pub fn set_tx_cu_margin_bps(&self, v: u32) -> Result<()> {
+        self.set_setting(KEY_CU_MARGIN_BPS, &v.to_string())
+    }
+
+    pub fn set_tx_tip_floor(&self, v: u64) -> Result<()> {
+        self.set_setting(KEY_TIP_FLOOR, &v.to_string())
+    }
+
+    pub fn set_tx_tip_ceiling(&self, v: u64) -> Result<()> {
+        self.set_setting(KEY_TIP_CEILING, &v.to_string())
+    }
+
+    pub fn set_dlmm_strategy(&self, s: &str) -> Result<()> {
+        self.set_setting(KEY_DLMM_STRATEGY, s)
+    }
+
+    /// Persist a landed write tx (manage / create). More analytics later.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_write_tx(
+        &self,
+        signature: &str,
+        op: &str,
+        venue: Option<&str>,
+        position: Option<&str>,
+        pool: Option<&str>,
+        tip_lamports: Option<u64>,
+        fee_lamports: Option<u64>,
+        sol_spent_lamports: Option<u64>,
+        summary: Option<&str>,
+        paid_label: Option<&str>,
+    ) -> Result<()> {
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "0".into());
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO write_txs (
+                    created_at, signature, op, venue, position, pool,
+                    tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    created_at,
+                    signature,
+                    op,
+                    venue,
+                    position,
+                    pool,
+                    tip_lamports.map(|v| v as i64),
+                    fee_lamports.map(|v| v as i64),
+                    sol_spent_lamports.map(|v| v as i64),
+                    summary,
+                    paid_label,
+                ],
+            )
+            .context("record_write_tx")?;
+        Ok(())
     }
 
     pub fn get_token(&self, mint: &str) -> Result<Option<CachedToken>> {
@@ -258,9 +417,7 @@ impl Store {
 /// `~/.config/sol-clmm-manager`
 pub fn default_config_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join(APP_DIR_NAME))
+    Ok(PathBuf::from(home).join(".config").join(APP_DIR_NAME))
 }
 
 pub fn default_db_path() -> Result<PathBuf> {
@@ -276,8 +433,8 @@ pub fn read_active_pointer() -> Result<Option<PathBuf>> {
     if !pointer.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&pointer)
-        .with_context(|| format!("read {}", pointer.display()))?;
+    let raw =
+        fs::read_to_string(&pointer).with_context(|| format!("read {}", pointer.display()))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -291,9 +448,7 @@ pub fn write_active_pointer(db_path: &Path) -> Result<()> {
     let abs = if db_path.is_absolute() {
         db_path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .context("cwd")?
-            .join(db_path)
+        std::env::current_dir().context("cwd")?.join(db_path)
     };
     let pointer = active_pointer_path()?;
     fs::write(&pointer, format!("{}\n", abs.display()))
@@ -302,15 +457,15 @@ pub fn write_active_pointer(db_path: &Path) -> Result<()> {
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return Path::new(&home).join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return Path::new(&home).join(rest);
     }
-    if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
+    if path == "~"
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home);
     }
     PathBuf::from(path)
 }
@@ -321,10 +476,10 @@ pub fn resolve_existing_db(cli_db: Option<&Path>) -> Result<Option<PathBuf>> {
         let path = expand_tilde(&p.display().to_string());
         return Ok(Some(path));
     }
-    if let Some(path) = read_active_pointer()? {
-        if path.exists() {
-            return Ok(Some(path));
-        }
+    if let Some(path) = read_active_pointer()?
+        && path.exists()
+    {
+        return Ok(Some(path));
     }
     Ok(None)
 }
@@ -428,7 +583,9 @@ mod tests {
 
     #[test]
     fn resolve_cli_db() {
-        let p = resolve_existing_db(Some(Path::new("/tmp/x.db"))).unwrap().unwrap();
+        let p = resolve_existing_db(Some(Path::new("/tmp/x.db")))
+            .unwrap()
+            .unwrap();
         assert_eq!(p, PathBuf::from("/tmp/x.db"));
     }
 

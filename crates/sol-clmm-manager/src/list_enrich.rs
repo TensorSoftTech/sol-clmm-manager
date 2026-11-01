@@ -1,14 +1,14 @@
 //! Prefetch USD / TVL for list rows + write pool snapshots.
 
+use crate::Venue;
 use crate::fees::format_amount_usd;
 use crate::pool::{IndexSpace, PoolStats};
 use crate::position::PositionRow;
-use crate::pricing::{fetch_mint_usd_prices, raw_to_usd, PriceApiKeys, PriceMode};
+use crate::pricing::{PriceApiKeys, PriceMode, fetch_mint_usd_prices, raw_to_usd};
 use crate::rpc::Rpc;
 use crate::snapshots::PoolSnapshotInput;
 use crate::store::Store;
 use crate::tokens::TokenInfo;
-use crate::Venue;
 use anyhow::Result;
 use solana_pubkey::Pubkey;
 use std::collections::{HashMap, HashSet};
@@ -153,33 +153,28 @@ pub fn enrich_rows(
         r.fees_a = format_amount_usd(r.fee_a as u128, r.decimals_a, sym_a, fa_usd);
         r.fees_b = format_amount_usd(r.fee_b as u128, r.decimals_b, sym_b, fb_usd);
 
-        if let Some(store) = store {
-            if r.pool != Pubkey::default() && snapshotted.insert(r.pool) {
-                let snap = PoolSnapshotInput {
-                    venue: r.venue,
-                    pool: r.pool,
-                    slot,
-                    fee_growth_global_a: r.fee_growth_global_a,
-                    fee_growth_global_b: r.fee_growth_global_b,
-                    protocol_fee_owed_a: r.protocol_fee_owed_a,
-                    protocol_fee_owed_b: r.protocol_fee_owed_b,
-                    fee_rate: r.fee_rate,
-                    liquidity: r.pool_liquidity.max(1),
-                    sqrt_price: r.sqrt_price,
-                    tick_current: r.tick_current,
-                    vault_a: r.vault_a,
-                    vault_b: r.vault_b,
-                    price_a_usd: pa.as_ref().and_then(|t| t.price),
-                    price_b_usd: pb.as_ref().and_then(|t| t.price),
-                };
-                let _ = store.record_pool_snapshot(
-                    &snap,
-                    r.decimals_a,
-                    r.decimals_b,
-                    sym_a,
-                    sym_b,
-                );
-            }
+        if let Some(store) = store
+            && r.pool != Pubkey::default()
+            && snapshotted.insert(r.pool)
+        {
+            let snap = PoolSnapshotInput {
+                venue: r.venue,
+                pool: r.pool,
+                slot,
+                fee_growth_global_a: r.fee_growth_global_a,
+                fee_growth_global_b: r.fee_growth_global_b,
+                protocol_fee_owed_a: r.protocol_fee_owed_a,
+                protocol_fee_owed_b: r.protocol_fee_owed_b,
+                fee_rate: r.fee_rate,
+                liquidity: r.pool_liquidity.max(1),
+                sqrt_price: r.sqrt_price,
+                tick_current: r.tick_current,
+                vault_a: r.vault_a,
+                vault_b: r.vault_b,
+                price_a_usd: pa.as_ref().and_then(|t| t.price),
+                price_b_usd: pb.as_ref().and_then(|t| t.price),
+            };
+            let _ = store.record_pool_snapshot(&snap, r.decimals_a, r.decimals_b, sym_a, sym_b);
         }
     }
 
@@ -189,17 +184,11 @@ pub fn enrich_rows(
 fn sum_opt(parts: &[Option<f64>]) -> Option<f64> {
     let mut s = 0.0;
     let mut any = false;
-    for p in parts {
-        if let Some(v) = p {
-            if v.is_finite() {
-                s += v;
-                any = true;
-            }
+    for v in parts.iter().flatten() {
+        if v.is_finite() {
+            s += v;
+            any = true;
         }
     }
-    if any {
-        Some(s)
-    } else {
-        None
-    }
+    if any { Some(s) } else { None }
 }

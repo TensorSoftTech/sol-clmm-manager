@@ -6,6 +6,28 @@ license.workspace = true
 description = "Shared Solana CLMM manager: RPC metering, SQLite store, token metadata, Jupiter/Titan quotes"
 readme = "../../README.md"
 
+[features]
+default = []
+## Compile claim / deposit / withdraw / swap / sign+send. Omit for a read-only binary.
+write = [
+    "dep:base64",
+    "dep:bs58",
+    "dep:sha2",
+    "dep:solana-commitment-config",
+    "dep:solana-hash",
+    "dep:solana-instruction",
+    "dep:solana-keypair",
+    "dep:solana-message",
+    "dep:solana-signer",
+    "dep:solana-transaction",
+    "dep:solana-transaction-status-client-types",
+]
+
+[[test]]
+name = "swap_match_fixtures"
+path = "tests/swap_match_fixtures.rs"
+required-features = ["write"]
+
 [dependencies]
 anyhow = { workspace = true }
 reqwest = { workspace = true }
@@ -15,3 +37,18 @@ solana-account = { workspace = true }
 solana-account-decoder-client-types = { workspace = true }
 solana-client = { workspace = true }
 solana-pubkey = { workspace = true }
+
+base64 = { workspace = true, optional = true }
+bs58 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+solana-commitment-config = { workspace = true, optional = true }
+solana-hash = { workspace = true, optional = true }
+solana-instruction = { workspace = true, optional = true }
+solana-keypair = { workspace = true, optional = true }
+solana-message = { workspace = true, optional = true }
+solana-signer = { workspace = true, optional = true }
+solana-transaction = { workspace = true, optional = true }
+solana-transaction-status-client-types = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde = { workspace = true }

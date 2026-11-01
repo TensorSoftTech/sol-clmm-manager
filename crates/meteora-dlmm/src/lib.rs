@@ -4,16 +4,18 @@
 
 #![forbid(unsafe_code)]
 
-mod decode;
+pub mod decode;
 mod detail;
 mod list;
+#[cfg(feature = "write")]
+pub mod write;
 
-pub use detail::fetch_position_detail;
+pub use detail::{fetch_pool_preview, fetch_position_detail};
 pub use list::list_positions;
 
 pub use sol_clmm_manager::{
-    format_amount, format_price, format_usd, format_usd_axis, liquidity_l_to_usd, LiquiditySample,
-    PoolStats, PositionDetail, PositionRow, PriceApiKeys, PriceMode, TokenSide, Venue,
+    LiquiditySample, PoolStats, PositionDetail, PositionRow, PriceApiKeys, PriceMode, TokenSide,
+    Venue, format_amount, format_price, format_usd, format_usd_axis, liquidity_l_to_usd,
 };
 
 use solana_pubkey::Pubkey;

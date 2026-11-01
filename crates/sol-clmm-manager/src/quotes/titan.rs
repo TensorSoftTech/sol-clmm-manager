@@ -28,9 +28,7 @@ pub fn fetch_usd_prices_with_tier(
 ) -> Result<HashMap<Pubkey, f64>> {
     let key = api_key.map(str::trim).filter(|s| !s.is_empty());
     let Some(key) = key else {
-        bail!(
-            "Titan needs an API key (free Sandbox OK) · developer.titan.exchange · settings"
-        );
+        bail!("Titan needs an API key (free Sandbox OK) · developer.titan.exchange · settings");
     };
     if mints.is_empty() {
         return Ok(HashMap::new());
@@ -47,7 +45,11 @@ pub fn fetch_usd_prices_with_tier(
         throttle(paid_plan)?;
         let short = {
             let s = mint.to_string();
-            format!("{}…{}", &s[..4.min(s.len())], &s[s.len().saturating_sub(4)..])
+            format!(
+                "{}…{}",
+                &s[..4.min(s.len())],
+                &s[s.len().saturating_sub(4)..]
+            )
         };
         match quote_mint_usd(mint, dec, &usdc, key) {
             Ok(p) => {
@@ -76,7 +78,10 @@ fn quote_mint_usd(mint: &Pubkey, decimals: u8, usdc: &Pubkey, api_key: &str) -> 
         .get(&url)
         .header("x-api-key", api_key)
         .header("Accept", "application/json")
-        .header("User-Agent", "sol-clmm-manager/0.1 (unofficial; quote-only)")
+        .header(
+            "User-Agent",
+            "sol-clmm-manager/0.1 (unofficial; quote-only)",
+        )
         .send()
         .context("titan quote HTTP")?;
 
@@ -97,10 +102,10 @@ fn quote_mint_usd(mint: &Pubkey, decimals: u8, usdc: &Pubkey, api_key: &str) -> 
     if let Some(p) = meta
         .and_then(|m| m.get("inputPriceUSD"))
         .and_then(|v| v.as_f64())
+        && p.is_finite()
+        && p > 0.0
     {
-        if p.is_finite() && p > 0.0 {
-            return Ok(p);
-        }
+        return Ok(p);
     }
 
     let winner = meta

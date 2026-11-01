@@ -20,9 +20,7 @@ pub const SELECT_FG: Color = Color::Rgb(10, 20, 18);
 pub const SELECT_BG: Color = Color::Rgb(0, 210, 170);
 
 pub fn title() -> Style {
-    Style::default()
-        .fg(ACCENT)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
 pub fn border() -> Style {
@@ -73,15 +71,11 @@ pub fn header_val() -> Style {
 }
 
 pub fn table_header() -> Style {
-    Style::default()
-        .fg(ACCENT)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
 pub fn input_cursor() -> Style {
-    Style::default()
-        .fg(ACCENT)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
 pub fn accent_blink() -> Style {

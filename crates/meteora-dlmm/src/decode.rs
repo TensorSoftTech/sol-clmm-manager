@@ -1,6 +1,6 @@
 //! Meteora DLMM account decoders (PositionV2 / LbPair / BinArray).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sol_clmm_manager::detail::{LiquiditySample, TokenSide};
 use sol_clmm_manager::pool::{IndexSpace, PoolStats};
 use solana_pubkey::Pubkey;
@@ -133,9 +133,7 @@ pub fn decode_position_v2(data: &[u8]) -> Result<PositionV2> {
         let base = fee_infos_off + i * 48;
         if base + 48 <= data.len() {
             let slot = FeeInfoSlot {
-                fee_x_per_token_complete: u128::from_le_bytes(
-                    data[base..base + 16].try_into()?,
-                ),
+                fee_x_per_token_complete: u128::from_le_bytes(data[base..base + 16].try_into()?),
                 fee_y_per_token_complete: u128::from_le_bytes(
                     data[base + 16..base + 32].try_into()?,
                 ),
@@ -339,10 +337,7 @@ pub fn claim_fees_from_bins(position: &PositionV2, bins: &BTreeMap<i32, BinData>
 }
 
 /// Position amounts from per-bin shares × bin reserves / supply.
-pub fn amounts_from_shares(
-    position: &PositionV2,
-    bins: &BTreeMap<i32, BinData>,
-) -> (u128, u128) {
+pub fn amounts_from_shares(position: &PositionV2, bins: &BTreeMap<i32, BinData>) -> (u128, u128) {
     let mut ax: u128 = 0;
     let mut ay: u128 = 0;
     let width = (position.upper_bin - position.lower_bin + 1).max(0) as usize;
@@ -358,8 +353,16 @@ pub fn amounts_from_shares(
         if bin.liquidity_supply == 0 {
             continue;
         }
-        ax = ax.saturating_add(mul_div_u128(share, bin.amount_x as u128, bin.liquidity_supply));
-        ay = ay.saturating_add(mul_div_u128(share, bin.amount_y as u128, bin.liquidity_supply));
+        ax = ax.saturating_add(mul_div_u128(
+            share,
+            bin.amount_x as u128,
+            bin.liquidity_supply,
+        ));
+        ay = ay.saturating_add(mul_div_u128(
+            share,
+            bin.amount_y as u128,
+            bin.liquidity_supply,
+        ));
     }
     (ax, ay)
 }
@@ -379,14 +382,17 @@ fn mul_div_u128(a: u128, b: u128, d: u128) -> u128 {
     }
 }
 
+/// `pad_bins` widens the X window beyond the position (use `CHART_FETCH_HALF_SPACINGS`).
+/// Position `[lower, upper]` still drives bar coloring only.
 pub fn build_bin_series(
     bins: &BTreeMap<i32, BinData>,
     position: &PositionV2,
     active_id: i32,
+    pad_bins: i32,
 ) -> Vec<LiquiditySample> {
     let lower = position.lower_bin;
     let upper = position.upper_bin;
-    let pad = 8;
+    let pad = pad_bins.max(2);
     let min_b = lower.min(active_id) - pad;
     let max_b = upper.max(active_id) + pad;
 

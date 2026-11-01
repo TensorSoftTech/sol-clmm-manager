@@ -6,9 +6,14 @@ license.workspace = true
 description = "Unofficial Meteora DLMM reads (list) — not affiliated with Meteora"
 readme = "../../README.md"
 
+[features]
+default = []
+write = ["sol-clmm-manager/write", "dep:solana-instruction"]
+
 [dependencies]
 anyhow = { workspace = true }
 sol-clmm-manager = { workspace = true }
 solana-account = { workspace = true }
 solana-client = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-instruction = { workspace = true, optional = true }

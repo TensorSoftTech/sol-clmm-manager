@@ -10,6 +10,11 @@ readme = "../../README.md"
 name = "sol-clmm-tui"
 path = "src/main.rs"
 
+[features]
+default = []
+## Enables claim / deposit / withdraw / compound (tx v1 · simulate always).
+write = ["sol-clmm-manager/write", "sol-clmm-client/write"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }

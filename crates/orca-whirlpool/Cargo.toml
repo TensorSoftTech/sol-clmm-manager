@@ -6,7 +6,12 @@ license.workspace = true
 description = "Unofficial Orca Whirlpools CLMM reads (list/detail/amounts/USD) — not affiliated with Orca"
 readme = "../../README.md"
 
+[features]
+default = []
+write = ["sol-clmm-manager/write", "dep:solana-instruction"]
+
 [dependencies]
 anyhow = { workspace = true }
 sol-clmm-manager = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-instruction = { workspace = true, optional = true }

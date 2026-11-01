@@ -8,9 +8,11 @@ use super::decode::{
 };
 use super::whirlpool_program_id;
 use anyhow::Result;
-use sol_clmm_manager::clmm_math::{amounts_from_liquidity, format_amount, read_token_account_amount};
+use sol_clmm_manager::clmm_math::{
+    amounts_from_liquidity, format_amount, read_token_account_amount,
+};
 use sol_clmm_manager::fees::collect_fees_quote;
-use sol_clmm_manager::rpc::{owned_nft_mints, Rpc};
+use sol_clmm_manager::rpc::{Rpc, owned_nft_mints};
 use sol_clmm_manager::store::Store;
 use sol_clmm_manager::tokens::resolve_mints;
 use sol_clmm_manager::{PositionRow, Venue};
@@ -37,7 +39,7 @@ pub fn list_positions(
 
     let accounts = rpc.get_multiple_accounts_chunked(&position_addrs)?;
     let mut decoded = Vec::new();
-    for (addr, maybe) in position_addrs.iter().zip(accounts.into_iter()) {
+    for (addr, maybe) in position_addrs.iter().zip(accounts) {
         let Some(account) = maybe else { continue };
         if account.owner != program {
             continue;
@@ -62,7 +64,7 @@ pub fn list_positions(
     let mut pools = HashMap::new();
     let mut token_mints: HashSet<Pubkey> = HashSet::new();
     let mut vault_keys: Vec<Pubkey> = Vec::new();
-    for (pk, maybe) in pool_keys.iter().zip(pool_accounts.into_iter()) {
+    for (pk, maybe) in pool_keys.iter().zip(pool_accounts) {
         if let Some(h) = maybe
             .as_ref()
             .and_then(|a| decode_whirlpool_stats(*pk, &a.data).ok())
@@ -98,7 +100,7 @@ pub fn list_positions(
         .unwrap_or_default();
     // (pool, tick) → (fee_growth_outside_a, fee_growth_outside_b)
     let mut tick_outside: HashMap<(Pubkey, i32), (u128, u128)> = HashMap::new();
-    for ((pool, start, spacing), maybe) in array_meta.into_iter().zip(array_accounts.into_iter()) {
+    for ((pool, start, spacing), maybe) in array_meta.into_iter().zip(array_accounts) {
         let Some(account) = maybe else { continue };
         let Ok(arr) = decode_tick_array(&account.data) else {
             continue;
@@ -114,13 +116,15 @@ pub fn list_positions(
         }
     }
 
-    let vault_accounts = rpc.get_multiple_accounts_chunked(&vault_keys).unwrap_or_default();
+    let vault_accounts = rpc
+        .get_multiple_accounts_chunked(&vault_keys)
+        .unwrap_or_default();
     let mut vault_amt: HashMap<Pubkey, u64> = HashMap::new();
-    for (pk, maybe) in vault_keys.iter().zip(vault_accounts.into_iter()) {
-        if let Some(a) = maybe.as_ref() {
-            if let Ok(amt) = read_token_account_amount(&a.data) {
-                vault_amt.insert(*pk, amt);
-            }
+    for (pk, maybe) in vault_keys.iter().zip(vault_accounts) {
+        if let Some(a) = maybe.as_ref()
+            && let Ok(amt) = read_token_account_amount(&a.data)
+        {
+            vault_amt.insert(*pk, amt);
         }
     }
 
@@ -142,39 +146,52 @@ pub fn list_positions(
         .into_iter()
         .map(|(addr, pos)| {
             let pool = pools.get(&pos.whirlpool);
-            let (mint_a, mint_b, tick_now, sqrt, fee_rate, spacing, fg_a, fg_b, proto_a, proto_b, pool_l, va, vb) =
-                match pool {
-                    Some(h) => (
-                        h.token_mint_a,
-                        h.token_mint_b,
-                        h.tick_current_index,
-                        h.sqrt_price,
-                        h.fee_rate,
-                        h.tick_spacing,
-                        h.fee_growth_global_a,
-                        h.fee_growth_global_b,
-                        h.protocol_fee_owed_a,
-                        h.protocol_fee_owed_b,
-                        h.liquidity,
-                        vault_amt.get(&h.token_vault_a).copied().unwrap_or(0),
-                        vault_amt.get(&h.token_vault_b).copied().unwrap_or(0),
-                    ),
-                    None => (
-                        Pubkey::default(),
-                        Pubkey::default(),
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ),
-                };
+            let (
+                mint_a,
+                mint_b,
+                tick_now,
+                sqrt,
+                fee_rate,
+                spacing,
+                fg_a,
+                fg_b,
+                proto_a,
+                proto_b,
+                pool_l,
+                va,
+                vb,
+            ) = match pool {
+                Some(h) => (
+                    h.token_mint_a,
+                    h.token_mint_b,
+                    h.tick_current_index,
+                    h.sqrt_price,
+                    h.fee_rate,
+                    h.tick_spacing,
+                    h.fee_growth_global_a,
+                    h.fee_growth_global_b,
+                    h.protocol_fee_owed_a,
+                    h.protocol_fee_owed_b,
+                    h.liquidity,
+                    vault_amt.get(&h.token_vault_a).copied().unwrap_or(0),
+                    vault_amt.get(&h.token_vault_b).copied().unwrap_or(0),
+                ),
+                None => (
+                    Pubkey::default(),
+                    Pubkey::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            };
             let (sym_a, dec_a) = sym(&mint_a);
             let (sym_b, dec_b) = sym(&mint_b);
             let in_range = tick_now >= pos.tick_lower_index && tick_now < pos.tick_upper_index;

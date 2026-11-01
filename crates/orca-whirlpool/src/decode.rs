@@ -1,6 +1,6 @@
 //! Manual decode of Whirlpool `Position` / `Whirlpool` / `TickArray` accounts.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sol_clmm_manager::clmm_math::TickPoint;
 use sol_clmm_manager::pool::{IndexSpace, PoolStats};
 use solana_pubkey::Pubkey;
@@ -55,6 +55,22 @@ pub struct WhirlpoolRewardInfo {
     pub growth_global_x64: u128,
 }
 
+impl WhirlpoolRewardInfo {
+    pub fn initialized(&self) -> bool {
+        self.mint != Pubkey::default() && self.vault != Pubkey::default()
+    }
+
+    /// Currently emitting (not a historical / disabled slot).
+    pub fn actively_emitting(&self) -> bool {
+        self.initialized() && self.emissions_per_second_x64 > 0
+    }
+
+    /// Need collect + destination ATA: active emissions or unclaimed owed.
+    pub fn claimable(&self, amount_owed: u64) -> bool {
+        self.initialized() && (amount_owed > 0 || self.actively_emitting())
+    }
+}
+
 pub type WhirlpoolStats = PoolStats;
 
 #[derive(Debug, Clone)]
@@ -72,7 +88,10 @@ pub struct TickArrayData {
 
 pub fn decode_position(data: &[u8]) -> Result<Position> {
     if data.len() < POSITION_LEN {
-        bail!("position account too short: {} < {POSITION_LEN}", data.len());
+        bail!(
+            "position account too short: {} < {POSITION_LEN}",
+            data.len()
+        );
     }
     if data[0..8] != POSITION_DISCRIMINATOR {
         bail!("not a Position account (bad discriminator)");
@@ -251,7 +270,7 @@ fn decode_fixed_tick_array(data: &[u8]) -> Result<TickArrayData> {
             o += 16;
         }
         ticks.push(TickPoint {
-            index: start_tick_index + i as i32,
+            index: start_tick_index + i,
             initialized,
             liquidity_net,
             liquidity_gross,
@@ -278,7 +297,7 @@ fn decode_dynamic_tick_array(data: &[u8]) -> Result<TickArrayData> {
         o += 1;
         let tick = match tag {
             0 => TickPoint {
-                index: start_tick_index + i as i32,
+                index: start_tick_index + i,
                 initialized: false,
                 liquidity_net: 0,
                 liquidity_gross: 0,
@@ -300,7 +319,7 @@ fn decode_dynamic_tick_array(data: &[u8]) -> Result<TickArrayData> {
                 }
                 o = end;
                 TickPoint {
-                    index: start_tick_index + i as i32,
+                    index: start_tick_index + i,
                     initialized: true,
                     liquidity_net,
                     liquidity_gross,
@@ -404,6 +423,9 @@ mod tests {
             .parse()
             .unwrap();
         let pda = tick_array_pda(&whirlpool, 0, &program);
-        assert_eq!(pda.to_string(), "8PhPzk7n4wU98Z6XCbVtPai2LtXSxYnfjkmgWuoAU8Zy");
+        assert_eq!(
+            pda.to_string(),
+            "8PhPzk7n4wU98Z6XCbVtPai2LtXSxYnfjkmgWuoAU8Zy"
+        );
     }
 }
