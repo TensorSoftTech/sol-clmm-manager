@@ -1,0 +1,23 @@
+[package]
+name = "sol-clmm-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal UI for Solana concentrated liquidity (Orca Whirlpools · Raydium CLMM · Meteora DLMM)"
+readme = "../../README.md"
+
+[[bin]]
+name = "sol-clmm-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+color-eyre = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+solana-client = { workspace = true }
+solana-keypair = { workspace = true }
+solana-pubkey = { workspace = true }
+sol-clmm-manager = { workspace = true }
+sol-clmm-client = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "meteora-dlmm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unofficial Meteora DLMM reads (list) — not affiliated with Meteora"
+readme = "../../README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+sol-clmm-manager = { workspace = true }
+solana-account = { workspace = true }
+solana-client = { workspace = true }
+solana-pubkey = { workspace = true }

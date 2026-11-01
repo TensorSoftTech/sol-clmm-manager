@@ -1,0 +1,13 @@
+[package]
+name = "raydium-clmm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unofficial Raydium CLMM reads (list) — not affiliated with Raydium"
+readme = "../../README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+sol-clmm-manager = { workspace = true }
+solana-account = { workspace = true }
+solana-pubkey = { workspace = true }

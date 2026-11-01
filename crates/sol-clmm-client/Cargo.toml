@@ -1,0 +1,16 @@
+[package]
+name = "sol-clmm-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin multi-venue Client API for Solana CLMM/DLMM reads (Orca · Raydium · Meteora)"
+readme = "../../README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+solana-client = { workspace = true }
+solana-pubkey = { workspace = true }
+sol-clmm-manager = { workspace = true }
+orca-whirlpool = { workspace = true }
+raydium-clmm = { workspace = true }
+meteora-dlmm = { workspace = true }

@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sol-clmm-manager",
+    "crates/orca-whirlpool",
+    "crates/raydium-clmm",
+    "crates/meteora-dlmm",
+    "crates/sol-clmm-client",
+    "crates/sol-clmm-tui",
+]
+default-members = ["crates/sol-clmm-tui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Tensorsoft"]
+repository = "https://github.com/local/sol-clmm-manager"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde_json = "1.0.154"
+solana-account = "5.4.0"
+solana-account-decoder-client-types = { version = "=4.4.0", features = ["agave-unstable-api"] }
+solana-client = "=4.4.0"
+solana-keypair = "4.0.0"
+solana-pubkey = { version = "4.4.0", features = ["curve25519"] }
+
+# workspace crates
+sol-clmm-manager = { path = "crates/sol-clmm-manager" }
+orca-whirlpool = { path = "crates/orca-whirlpool" }
+raydium-clmm = { path = "crates/raydium-clmm" }
+meteora-dlmm = { path = "crates/meteora-dlmm" }
+sol-clmm-client = { path = "crates/sol-clmm-client" }
