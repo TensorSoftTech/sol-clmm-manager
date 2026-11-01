@@ -74,6 +74,165 @@ pub struct CachedToken {
     pub decimals: u8,
 }
 
+/// Pool-mint ATA deltas recorded with a landed write (after − before).
+#[derive(Debug, Clone)]
+pub struct WriteTokenDelta {
+    pub mint_a: String,
+    pub mint_b: String,
+    pub symbol_a: String,
+    pub symbol_b: String,
+    pub decimals_a: u8,
+    pub decimals_b: u8,
+    pub delta_a: i64,
+    pub delta_b: i64,
+}
+
+/// One landed write from [`Store::record_write_tx`] / history list.
+#[derive(Debug, Clone)]
+pub struct WriteTxRow {
+    pub id: u64,
+    /// Unix seconds as decimal string (legacy storage).
+    pub created_at: String,
+    pub signature: String,
+    pub op: String,
+    pub venue: Option<String>,
+    pub position: Option<String>,
+    pub pool: Option<String>,
+    pub tip_lamports: Option<u64>,
+    pub fee_lamports: Option<u64>,
+    pub sol_spent_lamports: Option<u64>,
+    pub summary: Option<String>,
+    pub paid_label: Option<String>,
+    /// Pool mint A (base58) when token Δ was recorded.
+    pub mint_a: Option<String>,
+    pub mint_b: Option<String>,
+    pub symbol_a: Option<String>,
+    pub symbol_b: Option<String>,
+    pub decimals_a: Option<u8>,
+    pub decimals_b: Option<u8>,
+    /// ATA raw Δ (after − before); negative = spent.
+    pub delta_a: Option<i64>,
+    pub delta_b: Option<i64>,
+}
+
+impl WriteTxRow {
+    /// Parsed unix seconds, if `created_at` is numeric.
+    pub fn created_unix(&self) -> Option<u64> {
+        self.created_at.parse().ok()
+    }
+
+    /// Compact UTC stamp for the table (`MM-DD HH:MM`).
+    pub fn time_label(&self) -> String {
+        let Some(secs) = self.created_unix() else {
+            return "—".into();
+        };
+        // Civil date from unix days (proleptic Gregorian) — no chrono dep.
+        let days = (secs / 86_400) as i64;
+        let tod = secs % 86_400;
+        let h = tod / 3600;
+        let m = (tod % 3600) / 60;
+        let (y, mo, d) = unix_days_to_ymd(days);
+        let _ = y;
+        format!("{mo:02}-{d:02} {h:02}:{m:02}")
+    }
+
+    pub fn short_sig(&self) -> String {
+        let s = self.signature.as_str();
+        if s.len() <= 12 {
+            s.to_string()
+        } else {
+            format!("{}…{}", &s[..6], &s[s.len().saturating_sub(4)..])
+        }
+    }
+
+    pub fn short_pk(pk: &str) -> String {
+        if pk.len() <= 10 {
+            pk.to_string()
+        } else {
+            format!("{}…{}", &pk[..4], &pk[pk.len().saturating_sub(4)..])
+        }
+    }
+
+    /// `SOL −0.0012` (spent shown as minus).
+    pub fn sol_delta_label(&self) -> String {
+        match self.sol_spent_lamports {
+            Some(0) => "SOL 0".into(),
+            Some(l) => format!("SOL −{}", crate::format_amount(u128::from(l), 9)),
+            None => "SOL —".into(),
+        }
+    }
+
+    /// `USDC −1.2 · WSOL +0.05` (empty sides omitted).
+    pub fn token_delta_label(&self) -> String {
+        let a = self.format_token_delta(true);
+        let b = self.format_token_delta(false);
+        match (a, b) {
+            (None, None) => "—".into(),
+            (Some(a), None) | (None, Some(a)) => a,
+            (Some(a), Some(b)) => format!("{a} · {b}"),
+        }
+    }
+
+    fn format_token_delta(&self, side_a: bool) -> Option<String> {
+        let (sym, dec, delta) = if side_a {
+            (
+                self.symbol_a.as_deref()?,
+                self.decimals_a.unwrap_or(0),
+                self.delta_a?,
+            )
+        } else {
+            (
+                self.symbol_b.as_deref()?,
+                self.decimals_b.unwrap_or(0),
+                self.delta_b?,
+            )
+        };
+        // Skip zero noise unless we have no other side.
+        if delta == 0 {
+            return Some(format!("{sym} 0"));
+        }
+        let abs = crate::format_amount(u128::from(delta.unsigned_abs()), dec);
+        if delta < 0 {
+            Some(format!("{sym} −{abs}"))
+        } else {
+            Some(format!("{sym} +{abs}"))
+        }
+    }
+}
+
+/// Add token-Δ columns to older DBs (ignore if already present).
+fn migrate_write_txs_token_deltas(conn: &Connection) -> Result<()> {
+    for sql in [
+        "ALTER TABLE write_txs ADD COLUMN mint_a TEXT",
+        "ALTER TABLE write_txs ADD COLUMN mint_b TEXT",
+        "ALTER TABLE write_txs ADD COLUMN symbol_a TEXT",
+        "ALTER TABLE write_txs ADD COLUMN symbol_b TEXT",
+        "ALTER TABLE write_txs ADD COLUMN decimals_a INTEGER",
+        "ALTER TABLE write_txs ADD COLUMN decimals_b INTEGER",
+        "ALTER TABLE write_txs ADD COLUMN delta_a INTEGER",
+        "ALTER TABLE write_txs ADD COLUMN delta_b INTEGER",
+    ] {
+        let _ = conn.execute(sql, []);
+    }
+    Ok(())
+}
+
+/// Civil `(year, month, day)` from days since Unix epoch (UTC).
+fn unix_days_to_ymd(days: i64) -> (i32, u32, u32) {
+    // Howard Hinnant / civil_from_days algorithm.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64 + era * 400) as i32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
@@ -126,6 +285,7 @@ impl Store {
         .context("migrate schema")?;
 
         crate::snapshots::migrate_snapshots(&conn)?;
+        migrate_write_txs_token_deltas(&conn)?;
 
         let store = Self {
             conn,
@@ -319,17 +479,21 @@ impl Store {
         sol_spent_lamports: Option<u64>,
         summary: Option<&str>,
         paid_label: Option<&str>,
+        token_delta: Option<&WriteTokenDelta>,
     ) -> Result<()> {
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_else(|_| "0".into());
+        let td = token_delta;
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO write_txs (
                     created_at, signature, op, venue, position, pool,
-                    tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label,
+                    mint_a, mint_b, symbol_a, symbol_b, decimals_a, decimals_b, delta_a, delta_b
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                           ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     created_at,
                     signature,
@@ -342,10 +506,73 @@ impl Store {
                     sol_spent_lamports.map(|v| v as i64),
                     summary,
                     paid_label,
+                    td.map(|t| t.mint_a.as_str()),
+                    td.map(|t| t.mint_b.as_str()),
+                    td.map(|t| t.symbol_a.as_str()),
+                    td.map(|t| t.symbol_b.as_str()),
+                    td.map(|t| t.decimals_a as i64),
+                    td.map(|t| t.decimals_b as i64),
+                    td.map(|t| t.delta_a),
+                    td.map(|t| t.delta_b),
                 ],
             )
             .context("record_write_tx")?;
         Ok(())
+    }
+
+    /// Newest-first write history (landed manage / create txs).
+    pub fn list_write_txs(&self, limit: usize) -> Result<Vec<WriteTxRow>> {
+        let lim = limit.clamp(1, 5_000) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, created_at, signature, op, venue, position, pool,
+                        tip_lamports, fee_lamports, sol_spent_lamports, summary, paid_label,
+                        mint_a, mint_b, symbol_a, symbol_b, decimals_a, decimals_b, delta_a, delta_b
+                 FROM write_txs
+                 ORDER BY id DESC
+                 LIMIT ?1",
+            )
+            .context("list_write_txs prepare")?;
+        let rows = stmt
+            .query_map(params![lim], |row| {
+                Ok(WriteTxRow {
+                    id: row.get::<_, i64>(0)? as u64,
+                    created_at: row.get(1)?,
+                    signature: row.get(2)?,
+                    op: row.get(3)?,
+                    venue: row.get(4)?,
+                    position: row.get(5)?,
+                    pool: row.get(6)?,
+                    tip_lamports: row
+                        .get::<_, Option<i64>>(7)?
+                        .map(|v| v.max(0) as u64),
+                    fee_lamports: row
+                        .get::<_, Option<i64>>(8)?
+                        .map(|v| v.max(0) as u64),
+                    sol_spent_lamports: row
+                        .get::<_, Option<i64>>(9)?
+                        .map(|v| v.max(0) as u64),
+                    summary: row.get(10)?,
+                    paid_label: row.get(11)?,
+                    mint_a: row.get(12)?,
+                    mint_b: row.get(13)?,
+                    symbol_a: row.get(14)?,
+                    symbol_b: row.get(15)?,
+                    decimals_a: row
+                        .get::<_, Option<i64>>(16)?
+                        .map(|v| v.clamp(0, 18) as u8),
+                    decimals_b: row
+                        .get::<_, Option<i64>>(17)?
+                        .map(|v| v.clamp(0, 18) as u8),
+                    delta_a: row.get(18)?,
+                    delta_b: row.get(19)?,
+                })
+            })
+            .context("list_write_txs query")?
+            .collect::<Result<Vec<_>, _>>()
+            .context("list_write_txs rows")?;
+        Ok(rows)
     }
 
     pub fn get_token(&self, mint: &str) -> Result<Option<CachedToken>> {
@@ -610,5 +837,65 @@ mod tests {
         assert_eq!(format_db_size(500), "500B");
         assert_eq!(format_db_size(2048), "2K");
         assert_eq!(format_db_size(2 * 1024 * 1024), "2.0M");
+    }
+
+    #[test]
+    fn write_tx_roundtrip_list_newest_first() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("sol-clmm-wtx-{stamp}.db"));
+        let _ = fs::remove_file(&path);
+        let store = Store::open(&path, false).unwrap();
+        store
+            .record_write_tx(
+                "sigAAA",
+                "claim",
+                Some("orca"),
+                Some("pos1"),
+                Some("pool1"),
+                Some(100),
+                Some(5000),
+                Some(6000),
+                Some("claim fees"),
+                None,
+                None,
+            )
+            .unwrap();
+        let td = WriteTokenDelta {
+            mint_a: "MintA".into(),
+            mint_b: "MintB".into(),
+            symbol_a: "SOL".into(),
+            symbol_b: "USDC".into(),
+            decimals_a: 9,
+            decimals_b: 6,
+            delta_a: -1_000_000,
+            delta_b: 500_000,
+        };
+        store
+            .record_write_tx(
+                "sigBBB",
+                "compound",
+                Some("orca"),
+                Some("pos1"),
+                Some("pool1"),
+                Some(200),
+                None,
+                None,
+                Some("compound no-swap"),
+                None,
+                Some(&td),
+            )
+            .unwrap();
+        let rows = store.list_write_txs(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].signature, "sigBBB");
+        assert_eq!(rows[0].delta_a, Some(-1_000_000));
+        assert_eq!(rows[0].symbol_b.as_deref(), Some("USDC"));
+        assert!(rows[0].token_delta_label().contains("USDC"));
+        assert_eq!(rows[1].op, "claim");
+        assert!(rows[1].delta_a.is_none());
+        let _ = fs::remove_file(&path);
     }
 }

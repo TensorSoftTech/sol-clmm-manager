@@ -5,7 +5,9 @@ use sol_clmm_manager::rpc::{self, Rpc, RpcMeter, RpcStatus};
 use sol_clmm_manager::store::{
     self, AppSettings, Store, default_db_path, display_path, expand_tilde,
 };
-use sol_clmm_manager::{PositionDetail, PositionRow, PriceApiKeys, PriceMode, VenueFilter};
+use sol_clmm_manager::{
+    PositionDetail, PositionRow, PriceApiKeys, PriceMode, VenueFilter, WriteTxRow,
+};
 use solana_keypair::{Signer, read_keypair_file};
 use solana_pubkey::Pubkey;
 use std::path::PathBuf;
@@ -20,6 +22,8 @@ pub enum Screen {
     RpcOffer,
     WriteConsent,
     Positions,
+    /// Landed write txs from SQLite (`write_txs`).
+    History,
     Settings,
     SettingsRpc,
     SettingsApiKey,
@@ -431,6 +435,8 @@ pub enum BgFetchResult {
         result: Box<anyhow::Result<sol_clmm_manager::SendOutcome>>,
         /// Fresh wallet SOL/ATA balances after a successful send (every tx changes them).
         balances: Option<sol_clmm_manager::WalletPoolBalances>,
+        /// Pool mint ATA Δ (after − before) for history.
+        token_delta: Option<sol_clmm_manager::WriteTokenDelta>,
     },
 }
 
@@ -472,6 +478,9 @@ pub struct App {
     /// `v` cycles: all → Orca Whirlpool → Raydium CLMM → Meteora DLMM → all.
     pub venue_filter: VenueFilter,
     pub table_state: TableState,
+    /// Write history from SQLite (`write_txs` · newest first).
+    pub history: Vec<WriteTxRow>,
+    pub history_table_state: TableState,
     pub status: Option<RpcStatus>,
     pub status_line: String,
     pub should_quit: bool,
@@ -557,6 +566,8 @@ impl App {
             positions: Vec::new(),
             venue_filter: VenueFilter::All,
             table_state: TableState::default(),
+            history: Vec::new(),
+            history_table_state: TableState::default(),
             status: None,
             status_line: String::new(),
             should_quit: false,
@@ -895,8 +906,89 @@ impl App {
             ""
         };
         format!(
-            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue{create_hint} · Enter detail · p pubkey · s settings · r refresh · q"
+            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue · y history{create_hint} · Enter detail · p pubkey · s settings · r refresh · q"
         )
+    }
+
+    pub fn open_history(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+        self.dismiss_links_overlay();
+        self.reload_history();
+        self.screen = Screen::History;
+        self.status_line = self.history_status_line();
+    }
+
+    pub fn close_history(&mut self) {
+        self.dismiss_links_overlay();
+        self.screen = Screen::Positions;
+        self.status_line = self.positions_status_line();
+    }
+
+    pub fn reload_history(&mut self) {
+        let rows = match self.store.as_ref() {
+            Some(store) => store.list_write_txs(500).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let n = rows.len();
+        self.history = rows;
+        if n == 0 {
+            self.history_table_state.select(None);
+        } else {
+            let i = self.history_table_state.selected().unwrap_or(0).min(n - 1);
+            self.history_table_state.select(Some(i));
+        }
+    }
+
+    pub fn history_status_line(&self) -> String {
+        let n = self.history.len();
+        format!(
+            "history · {n} writes · ↑↓ · Enter / p sig · r reload · Esc positions · ? help · q"
+        )
+    }
+
+    pub fn selected_history_row(&self) -> Option<&WriteTxRow> {
+        let i = self.history_table_state.selected()?;
+        self.history.get(i)
+    }
+
+    pub fn history_select_next(&mut self) {
+        self.dismiss_links_overlay();
+        let n = self.history.len();
+        if n == 0 {
+            return;
+        }
+        let i = self.history_table_state.selected().unwrap_or(0);
+        self.history_table_state.select(Some((i + 1).min(n - 1)));
+    }
+
+    pub fn history_select_prev(&mut self) {
+        self.dismiss_links_overlay();
+        let n = self.history.len();
+        if n == 0 {
+            return;
+        }
+        let i = self.history_table_state.selected().unwrap_or(0);
+        self.history_table_state.select(Some(i.saturating_sub(1)));
+    }
+
+    /// Full signature (+ Solscan URL) in status (`p` / Enter · again to hide).
+    pub fn toggle_selected_history_link(&mut self) {
+        if self.links_overlay {
+            self.restore_links_overlay();
+            return;
+        }
+        let Some(row) = self.selected_history_row() else {
+            self.status_line = "select a tx first · then p for signature".into();
+            return;
+        };
+        let sig = row.signature.clone();
+        let tokens = row.token_delta_label();
+        let sol = row.sol_delta_label();
+        self.status_before_links = Some(self.status_line.clone());
+        self.links_overlay = true;
+        self.status_line = format!("sig {sig} · {sol} · {tokens} · p hide");
     }
 
     /// Open help overlay; remembers current screen for Esc.
@@ -977,6 +1069,7 @@ impl App {
                     "compound".into()
                 }
             }
+            Screen::History => self.history_status_line(),
             Screen::Settings => "settings · ↑↓ · Enter · ? help · Esc back".into(),
             Screen::CreatePosition => {
                 "create · ←→ range · Tab edge · Enter next · Esc back".into()
@@ -1627,7 +1720,11 @@ impl App {
                 }
             }
             #[cfg(feature = "write")]
-            BgFetchResult::Write { result, balances } => {
+            BgFetchResult::Write {
+                result,
+                balances,
+                token_delta,
+            } => {
                 self.load_started = None;
                 match *result {
                     Ok(out) => {
@@ -1650,6 +1747,7 @@ impl App {
                                 out.sol_spent_lamports,
                                 c.map(|x| x.plan.summary.as_str()),
                                 Some(paid.as_str()),
+                                token_delta.as_ref(),
                             );
                         }
                         if let Some(c) = self.write_confirm.as_mut() {
@@ -2791,20 +2889,36 @@ impl App {
             .iter()
             .map(|k| k.to_bytes())
             .collect();
-        // Mints for post-tx wallet balance refresh (detail or create preview).
+        // Mints + labels for before/after wallet balance Δ (detail or create preview).
         let bal_owner = self.wallet;
-        let (mint_a, mint_b) = self
+        let (mint_a, mint_b, sym_a, sym_b, dec_a, dec_b) = self
             .detail
             .as_ref()
-            .map(|d| (d.token_a.mint, d.token_b.mint))
+            .map(|d| {
+                (
+                    Some(d.token_a.mint),
+                    Some(d.token_b.mint),
+                    Some(d.token_a.symbol.clone()),
+                    Some(d.token_b.symbol.clone()),
+                    Some(d.token_a.decimals),
+                    Some(d.token_b.decimals),
+                )
+            })
             .or_else(|| {
                 self.create.as_ref().and_then(|w| {
-                    w.preview
-                        .as_ref()
-                        .map(|p| (p.token_a.mint, p.token_b.mint))
+                    w.preview.as_ref().map(|p| {
+                        (
+                            Some(p.token_a.mint),
+                            Some(p.token_b.mint),
+                            Some(p.token_a.symbol.clone()),
+                            Some(p.token_b.symbol.clone()),
+                            Some(p.token_a.decimals),
+                            Some(p.token_b.decimals),
+                        )
+                    })
                 })
             })
-            .unzip();
+            .unwrap_or((None, None, None, None, None, None));
 
         if let Some(c) = self.write_confirm.as_mut() {
             c.phase = crate::write_flow::ConfirmPhase::Busy;
@@ -2819,6 +2933,17 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
         thread::spawn(move || {
+            let fetch_bal =
+                |owner: Pubkey, ma: Pubkey, mb: Pubkey| -> Option<sol_clmm_manager::WalletPoolBalances> {
+                    let sol = rpc::connect(&rpc_url);
+                    let meter = RpcMeter::default();
+                    let traced = Rpc::new(&sol, &meter);
+                    sol_clmm_manager::fetch_wallet_pool_balances(&traced, &owner, ma, mb).ok()
+                };
+            let bal_before = match (bal_owner, mint_a, mint_b) {
+                (Some(owner), Some(ma), Some(mb)) => fetch_bal(owner, ma, mb),
+                _ => None,
+            };
             let result = (|| -> anyhow::Result<sol_clmm_manager::SendOutcome> {
                 let rpc = solana_client::rpc_client::RpcClient::new(rpc_url.clone());
                 let payer = read_keypair_file(&path)
@@ -2844,20 +2969,48 @@ impl App {
             // Every successful tx changes SOL / ATA — refresh immediately.
             let balances = if result.is_ok() {
                 match (bal_owner, mint_a, mint_b) {
-                    (Some(owner), Some(ma), Some(mb)) => {
-                        let sol = rpc::connect(&rpc_url);
-                        let meter = RpcMeter::default();
-                        let traced = Rpc::new(&sol, &meter);
-                        sol_clmm_manager::fetch_wallet_pool_balances(&traced, &owner, ma, mb).ok()
-                    }
+                    (Some(owner), Some(ma), Some(mb)) => fetch_bal(owner, ma, mb),
                     _ => None,
                 }
             } else {
                 None
             };
+            let token_delta = match (
+                &bal_before,
+                &balances,
+                mint_a,
+                mint_b,
+                sym_a,
+                sym_b,
+                dec_a,
+                dec_b,
+            ) {
+                (
+                    Some(before),
+                    Some(after),
+                    Some(ma),
+                    Some(mb),
+                    Some(sa),
+                    Some(sb),
+                    Some(da),
+                    Some(db),
+                ) => Some(sol_clmm_manager::WriteTokenDelta {
+                    mint_a: ma.to_string(),
+                    mint_b: mb.to_string(),
+                    // WSOL ATA kept distinct from native SOL column.
+                    symbol_a: if before.a.is_wsol { "WSOL".into() } else { sa },
+                    symbol_b: if before.b.is_wsol { "WSOL".into() } else { sb },
+                    decimals_a: da,
+                    decimals_b: db,
+                    delta_a: after.a.ata_amount as i64 - before.a.ata_amount as i64,
+                    delta_b: after.b.ata_amount as i64 - before.b.ata_amount as i64,
+                }),
+                _ => None,
+            };
             let _ = tx.send(BgFetchResult::Write {
                 result: Box::new(result),
                 balances,
+                token_delta,
             });
         });
     }

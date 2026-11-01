@@ -208,6 +208,7 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             }
             KeyCode::Char('p') => app.toggle_selected_position_link(),
             KeyCode::Char('v') => app.cycle_venue_filter(),
+            KeyCode::Char('y') if !app.is_busy() => app.open_history(),
             KeyCode::Char('r') => app.request_list_refresh(),
             KeyCode::Enter => app.open_selected_detail(),
             KeyCode::Down | KeyCode::Char('j') if !app.is_busy() => {
@@ -216,6 +217,18 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             KeyCode::Up | KeyCode::Char('k') if !app.is_busy() => {
                 app.select_prev();
             }
+            _ => {}
+        },
+        Screen::History => match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.close_history(),
+            KeyCode::Char('?') | KeyCode::Char('h') => app.open_help(),
+            KeyCode::Char('r') => {
+                app.reload_history();
+                app.status_line = app.history_status_line();
+            }
+            KeyCode::Enter | KeyCode::Char('p') => app.toggle_selected_history_link(),
+            KeyCode::Down | KeyCode::Char('j') => app.history_select_next(),
+            KeyCode::Up | KeyCode::Char('k') => app.history_select_prev(),
             _ => {}
         },
         #[cfg(feature = "write")]

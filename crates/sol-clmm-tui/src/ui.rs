@@ -26,6 +26,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::RpcOffer => draw_rpc_offer(frame, app),
         Screen::WriteConsent => draw_write_consent(frame, app),
         Screen::Positions => draw_positions_screen(frame, app),
+        Screen::History => draw_history_screen(frame, app),
         Screen::Settings => draw_settings(frame, app),
         Screen::SettingsRpc => draw_settings_rpc(frame, app),
         Screen::SettingsApiKey => draw_settings_api_key(frame, app),
@@ -1214,6 +1215,11 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     );
     push(
         &mut out,
+        HelpStyle::Key,
+        "  y            write history (sqlite write_txs · landed manage / create)",
+    );
+    push(
+        &mut out,
         HelpStyle::Body,
         "  Columns: venue · pool · ≈ position USD · pool TVL · claim-sim fees · tick/bin range.",
     );
@@ -1326,7 +1332,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  P2: history — store our inputs + sig + balance Δ (sig → re-fetch chain anytime).",
+        "  P2: history (y) shows SOL + token Δ · richer plan inputs still TODO.",
     );
     push(
         &mut out,
@@ -1452,6 +1458,22 @@ fn draw_positions_screen(frame: &mut Frame, app: &mut App) {
 
     draw_header(frame, app, chunks[0]);
     draw_positions(frame, app, chunks[1]);
+    draw_footer(frame, app, chunks[2]);
+}
+
+fn draw_history_screen(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(5),
+            Constraint::Length(FOOTER_H),
+        ])
+        .split(area);
+
+    draw_header(frame, app, chunks[0]);
+    draw_history(frame, app, chunks[1]);
     draw_footer(frame, app, chunks[2]);
 }
 
@@ -2180,7 +2202,7 @@ fn draw_positions(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
 
     let title = format!(
-        "positions · {} · ? help · v venue · r refresh · Enter detail",
+        "positions · {} · ? help · v venue · y history · r refresh · Enter detail",
         app.venue_filter.label()
     );
     let table = Table::new(rows, widths)
@@ -2190,6 +2212,80 @@ fn draw_positions(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_symbol("▸ ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+}
+
+fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    let header = Row::new([
+        Cell::from("when"),
+        Cell::from("op"),
+        Cell::from("venue"),
+        Cell::from("SOL Δ"),
+        Cell::from("token Δ"),
+        Cell::from("summary"),
+    ])
+    .style(theme::table_header());
+
+    let rows: Vec<Row> = if app.history.is_empty() {
+        vec![Row::new([
+            Cell::from(Span::styled("—", theme::dim())),
+            Cell::from(Span::styled(
+                "no writes yet · land a manage/create tx first",
+                theme::muted(),
+            )),
+            Cell::from("—"),
+            Cell::from("—"),
+            Cell::from("—"),
+            Cell::from("—"),
+        ])]
+    } else {
+        app.history
+            .iter()
+            .map(|r| {
+                let sol = r.sol_delta_label();
+                let tokens = r.token_delta_label();
+                let summary = r
+                    .summary
+                    .as_deref()
+                    .or(r.paid_label.as_deref())
+                    .unwrap_or("—");
+                Row::new([
+                    Cell::from(r.time_label()),
+                    Cell::from(Span::styled(r.op.clone(), theme::accent_text())),
+                    Cell::from(
+                        r.venue
+                            .as_deref()
+                            .unwrap_or("—")
+                            .to_string(),
+                    ),
+                    Cell::from(Span::styled(sol, theme::ok())),
+                    Cell::from(Span::styled(tokens, theme::body())),
+                    Cell::from(Span::styled(summary.to_string(), theme::muted())),
+                ])
+                .style(theme::body())
+            })
+            .collect()
+    };
+
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Min(16),
+        Constraint::Min(10),
+    ];
+
+    let title = format!(
+        "history · {} writes · Enter/p sig+Δ · r reload · Esc positions",
+        app.history.len()
+    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(panel(&title, false))
+        .row_highlight_style(theme::highlight())
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(table, area, &mut app.history_table_state);
 }
 
 /// Footer: status/keys + session RPC counter/history (each row needs borders).
