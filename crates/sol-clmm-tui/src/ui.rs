@@ -1282,7 +1282,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Title,
-        "Writes — solid POC · burner wallet · autoswap WIP",
+        "Writes — solid POC · burner wallet",
     );
     push(
         &mut out,
@@ -1292,7 +1292,17 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  AUTOSWAP (Jupiter/Titan) does NOT work as intended — prefer no-swap deposits.",
+        "  P0: correct autoswap (maybe helper program) · prefer no-swap until then.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  P1 final boss: rebalance / move OOR → close → swap → open in range.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  P2: history — store our inputs + sig + balance Δ (sig → re-fetch chain anytime).",
     );
     push(
         &mut out,

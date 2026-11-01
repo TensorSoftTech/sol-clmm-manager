@@ -16,7 +16,8 @@
 
 | Area | Reality today |
 |------|----------------|
-| **Autoswap (Jupiter / Titan)** | **Does not work as intended yet.** Sizing, route, and slippage are unreliable. Prefer **no-swap** deposits (correct side in-range / out-of-range) until this is fixed. |
+| **Autoswap (Jupiter / Titan)** | **Does not work as intended yet** (P0 — see TODO). Sizing / route / slippage drift. Prefer **no-swap** until a correct path (likely helper program) lands. |
+| **Rebalance / move** | Not built yet (P1 · final boss): close OOR → swap → open in range. |
 | **Everything else write-related** | Good as a POC — still use a **burner wallet**; always read sim logs before Enter send. |
 
 Not audited. No warranty. Esc / cancel anytime. When in doubt: **read-only build, no `--features write`.**
@@ -88,7 +89,7 @@ Protocol crates do **not** depend on the TUI. Agents should use **`sol-clmm-clie
 
 ## Status
 
-Pre-alpha. **Reads** (list / detail / chart / ≈ USD) work across Orca, Raydium, and Meteora (`v` filters). **Writes are a solid POC** (burner / dust) — see the note at the top; **autoswap** is the main gap.
+Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / dust). Next: **correct swaps (P0)** · **rebalance (P1)** · **history / accounting (P2)**.
 
 ## Progress
 
@@ -106,14 +107,23 @@ Pre-alpha. **Reads** (list / detail / chart / ≈ USD) work across Orca, Raydium
 - [x] MIT + unofficial / risk notes
 - [x] **`sol-clmm-client`** multi-venue Client + `skills/` agent docs
 
-### TODO
+### TODO — priority
+
+1. **Correct swaps (P0)** — deposit / create autoswap that actually matches the range ratio. Likely a **helper / intermediary program** (atomic: swap → exact A/B → increase L) so we are not fighting Jupiter/Titan quote drift + multi-ix race. Until then: prefer no-swap legs.
+2. **Rebalance / move position (P1 · final boss)** — when out of range (or user wants a new band): claim → withdraw/close → (swap if needed) → open a new in-range (or target) position in one managed flow. Same helper contract may own the atomic path. TUI: manage → rebalance wizard.
+3. **History / accounting (P2)** — minimal durable ledger (sig is enough to re-fetch chain data anytime):
+   - **Inputs from us** — what we planned (op, venue, position/pool, amounts / shape / tip from the confirm plan).
+   - **Tx signature** — already stored; any moment later: pull full meta / logs / token balances from RPC.
+   - **Balance changes** — wallet native + pool mint ATAs (and fee if known) before→after send.
+   - Have today: sig · op · venue · position · pool · tip/fee · SOL Δ · text summary. Missing: structured plan inputs + per-mint balance Δ. Then TUI history / CSV.
+
+### TODO — later
 
 - [ ] List-row ≈ position USD + pool TVL (prefetch; detail reuses)
 - [x] Claim-sim fees (fee-growth) + rewards · human amounts + USD
 - [x] **Pool snapshots in SQLite** → period fee / volume deltas on detail refresh
 - [x] Write scaffold (`--features write`) · **tx v1** · always simulate · auto CU/tip
-- [x] **SOL as native** (not WSOL UX) · manage wrap/unwrap · Jupiter `wrapAndUnwrapSol` · DLMM strategies · close+claim · create
-- [ ] Fill venue IX account metas (claim/deposit/withdraw/close/create send paths)
+- [x] **SOL as native** (not WSOL UX) · manage wrap/unwrap · Jupiter `wrapAndUnwrapSol=false` · DLMM strategies · close+claim · create
 - [ ] **Agent mode** binary on the same libs (read default · write opt-in)
 - [ ] Bundled positions · sharper chart markers
 
