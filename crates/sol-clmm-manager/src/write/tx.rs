@@ -290,7 +290,11 @@ pub fn estimate_budget_signers(
     jupiter_tip_lamports: Option<u64>,
 ) -> Result<TxBudget> {
     let (cu, loaded_rounded, mode) = if prefs.mode == BudgetMode::Manual {
-        (prefs.compute_unit_limit, prefs.loaded_accounts_data_size_limit, BudgetMode::Manual)
+        (
+            prefs.compute_unit_limit,
+            prefs.loaded_accounts_data_size_limit,
+            BudgetMode::Manual,
+        )
     } else {
         let probe = prepare_v1_tx_signers(
             payer,

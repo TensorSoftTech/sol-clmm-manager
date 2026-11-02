@@ -498,11 +498,11 @@ pub fn plan_claim_and_withdraw(
         &detail.token_a.mint,
         &detail.token_b.mint,
     ));
-    let pct = if detail.position_liquidity > 0 {
-        (liq.saturating_mul(100) / detail.position_liquidity).min(100)
-    } else {
-        0
-    };
+    let pct = liq
+        .saturating_mul(100)
+        .checked_div(detail.position_liquidity)
+        .unwrap_or(0)
+        .min(100);
     Ok(WritePlan {
         op: WriteOp::ClaimAndWithdraw,
         venue_label: "orca whirlpool".into(),
@@ -515,9 +515,7 @@ pub fn plan_claim_and_withdraw(
         expected: ExpectedDeltas {
             fee_a: detail.fee_a,
             fee_b: detail.fee_b,
-            note: format!(
-                "collect_fees(+rewards) → decrease_liquidity({pct}%) · position stays"
-            ),
+            note: format!("collect_fees(+rewards) → decrease_liquidity({pct}%) · position stays"),
             ..Default::default()
         },
         payer: authority,
@@ -726,13 +724,19 @@ fn whirlpool_pda(config: &Pubkey, mint_a: &Pubkey, mint_b: &Pubkey, tick_spacing
 }
 
 fn price_to_sqrt_x64(human_b_per_a: f64, dec_a: u8, dec_b: u8) -> anyhow::Result<u128> {
-    anyhow::ensure!(human_b_per_a.is_finite() && human_b_per_a > 0.0, "initial price must be > 0");
+    anyhow::ensure!(
+        human_b_per_a.is_finite() && human_b_per_a > 0.0,
+        "initial price must be > 0"
+    );
     let scale = 10f64.powi(i32::from(dec_b) - i32::from(dec_a));
     let raw = human_b_per_a * scale;
     anyhow::ensure!(raw.is_finite() && raw > 0.0, "raw price invalid");
     let sqrt = raw.sqrt();
     let q = sqrt * ((1u128 << 64) as f64);
-    anyhow::ensure!(q.is_finite() && q > 0.0 && q < u128::MAX as f64, "sqrt_price overflow");
+    anyhow::ensure!(
+        q.is_finite() && q > 0.0 && q < u128::MAX as f64,
+        "sqrt_price overflow"
+    );
     Ok(q as u128)
 }
 
@@ -761,8 +765,16 @@ pub fn plan_create_pool(
     };
     let sqrt = price_to_sqrt_x64(
         price,
-        if ordered { params.decimals_a } else { params.decimals_b },
-        if ordered { params.decimals_b } else { params.decimals_a },
+        if ordered {
+            params.decimals_a
+        } else {
+            params.decimals_b
+        },
+        if ordered {
+            params.decimals_b
+        } else {
+            params.decimals_a
+        },
     )?;
     let fee_tier = fee_tier_pda(&config, tick_spacing);
     let pool = whirlpool_pda(&config, &mint_a, &mint_b, tick_spacing);
@@ -791,7 +803,10 @@ pub fn plan_create_pool(
     let mode_note = match params.mode {
         CreatePoolMode::PoolOnly => "pool only".to_string(),
         CreatePoolMode::PoolDeposit | CreatePoolMode::PoolDepositSwap => {
-            format!("{} · after land use n create on pool {pool}", params.mode.label())
+            format!(
+                "{} · after land use n create on pool {pool}",
+                params.mode.label()
+            )
         }
     };
     Ok(WritePlan {

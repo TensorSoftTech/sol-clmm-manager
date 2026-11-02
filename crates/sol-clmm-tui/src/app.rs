@@ -121,7 +121,6 @@ pub enum ApiKeyTarget {
     Titan,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupStep {
     Choose,
@@ -216,14 +215,7 @@ pub const TIP_AUTO: u64 = u64::MAX;
 /// Priority fee presets. `0` = off · `TIP_AUTO` = network sample.
 pub const TIP_PRESETS: [u64; 9] = [
     0, // off — no priority fee on the tx
-    1_000,
-    2_000,
-    5_000,
-    10_000,
-    25_000,
-    50_000,
-    100_000,
-    TIP_AUTO,
+    1_000, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000, TIP_AUTO,
 ];
 
 pub fn tip_label(tip: u64) -> String {
@@ -1014,9 +1006,9 @@ impl App {
     pub fn history_status_line(&self) -> String {
         let n = self.history.len();
         match &self.history_filter {
-            HistoryFilter::All => format!(
-                "history · all · {n} writes · ↑↓ · Enter/p sig · r reload · Esc list · ?"
-            ),
+            HistoryFilter::All => {
+                format!("history · all · {n} writes · ↑↓ · Enter/p sig · r reload · Esc list · ?")
+            }
             HistoryFilter::Position { label, .. } => format!(
                 "history · {label} · {n} writes · ↑↓ · Enter/p sig · r reload · Esc detail · ?"
             ),
@@ -1155,9 +1147,7 @@ impl App {
             }
             Screen::History => self.history_status_line(),
             Screen::Settings => "settings · ↑↓ · Enter · ? help · Esc back".into(),
-            Screen::CreatePosition => {
-                "create · ←→ range · Tab edge · Enter next · Esc back".into()
-            }
+            Screen::CreatePosition => "create · ←→ range · Tab edge · Enter next · Esc back".into(),
             Screen::Wallet => {
                 #[cfg(feature = "write")]
                 {
@@ -1171,9 +1161,7 @@ impl App {
                     "wallet".into()
                 }
             }
-            Screen::WriteConfirm => {
-                "manage tx · [ ] tip · Enter sim/send · Esc".into()
-            }
+            Screen::WriteConfirm => "manage tx · [ ] tip · Enter sim/send · Esc".into(),
             _ => self.positions_status_line(),
         };
     }
@@ -1814,8 +1802,7 @@ impl App {
                     }
                     Err(e) => {
                         self.wallet_wiz = None;
-                        self.status_line =
-                            format!("wallet balances: {e:#} · Esc back · w retry");
+                        self.status_line = format!("wallet balances: {e:#} · Esc back · w retry");
                     }
                 }
             }
@@ -1828,8 +1815,8 @@ impl App {
                         // Start zoomed out to full series (narrow fit was unreadable on SOL/USDC).
                         let step = d.pool.tick_spacing.max(1) as i32;
                         let span = (d.series_max_tick - d.series_min_tick).max(step);
-                        self.detail_chart_half_spacings = (span / step / 2)
-                            .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+                        self.detail_chart_half_spacings =
+                            (span / step / 2).max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
                         self.detail = Some(d);
                         self.detail_error = None;
                         self.status_line = if self.writes_live() {
@@ -1899,10 +1886,10 @@ impl App {
                             c.wallet_balances = balances.clone();
                         }
                         // Every landed tx changes SOL / ATA — apply to detail immediately.
-                        if let Some(bal) = balances {
-                            if let Some(d) = self.detail.as_mut() {
-                                d.wallet_balances = Some(bal);
-                            }
+                        if let Some(bal) = balances
+                            && let Some(d) = self.detail.as_mut()
+                        {
+                            d.wallet_balances = Some(bal);
                         }
                         self.status_line = "landed · wallet balances updated · Enter back".into();
                     }
@@ -1970,8 +1957,8 @@ impl App {
                     .abs()
                     .max((d.row.tick_upper - cur).abs())
                     .max(step);
-                let need = ((dist * 5) / (step * 4) + 2)
-                    .max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
+                let need =
+                    ((dist * 5) / (step * 4) + 2).max(sol_clmm_manager::CHART_HALF_SPACINGS_MIN);
                 self.detail_chart_half_spacings = need.min(max_half);
             }
         }
@@ -2338,9 +2325,8 @@ impl App {
             };
             return;
         }
-        self.create = Some(
-            crate::write_flow::CreateWizard::new().with_swap_router(&self.swap_mode),
-        );
+        self.create =
+            Some(crate::write_flow::CreateWizard::new().with_swap_router(&self.swap_mode));
         self.screen = Screen::CreatePosition;
         self.status_line = "create position · Esc cancel".into();
     }
@@ -2394,9 +2380,8 @@ impl App {
                 if let Some(w) = self.create.as_mut() {
                     w.on_preview_loaded(preview);
                 }
-                self.status_line = format!(
-                    "{sym} · active {active} · {bal} · ←→ ticks · +/- zoom · Enter"
-                );
+                self.status_line =
+                    format!("{sym} · active {active} · {bal} · ←→ ticks · +/- zoom · Enter");
             }
             Err(e) => {
                 if let Some(w) = self.create.as_mut() {
@@ -2476,12 +2461,12 @@ impl App {
         match choice {
             ManageChoice::Deposit => self.open_manage_deposit(rpc),
             ManageChoice::Compound => self.open_manage_compound(),
-            ManageChoice::Withdraw => self.open_manage_withdraw(
-                crate::write_flow::WithdrawKind::Withdraw,
-            ),
-            ManageChoice::ClaimWithdraw => self.open_manage_withdraw(
-                crate::write_flow::WithdrawKind::ClaimWithdraw,
-            ),
+            ManageChoice::Withdraw => {
+                self.open_manage_withdraw(crate::write_flow::WithdrawKind::Withdraw)
+            }
+            ManageChoice::ClaimWithdraw => {
+                self.open_manage_withdraw(crate::write_flow::WithdrawKind::ClaimWithdraw)
+            }
             other => self.detail_write_op(rpc, other),
         }
     }
@@ -2515,11 +2500,9 @@ impl App {
             return;
         }
         // Re-fetch at start of mingling — native SOL vs WSOL may have changed.
-        let balances = self.refresh_wallet_balances_for_detail(rpc).or_else(|| {
-            self.detail
-                .as_ref()
-                .and_then(|d| d.wallet_balances.clone())
-        });
+        let balances = self
+            .refresh_wallet_balances_for_detail(rpc)
+            .or_else(|| self.detail.as_ref().and_then(|d| d.wallet_balances.clone()));
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
@@ -2578,7 +2561,8 @@ impl App {
             let meter = RpcMeter::default();
             let rpc = Rpc::new(&sol, &meter);
             let store = db_path.and_then(|p| Store::open(&p, false).ok());
-            let result = sol_clmm_manager::fetch_wallet_token_balances(&rpc, &owner, store.as_ref());
+            let result =
+                sol_clmm_manager::fetch_wallet_token_balances(&rpc, &owner, store.as_ref());
             let _ = tx.send(BgFetchResult::Wallet {
                 result: Box::new(result),
                 meter,
@@ -2723,8 +2707,7 @@ impl App {
         };
         let plan = sol_clmm_manager::plan_wrap_sol(payer.pubkey(), lamports);
         let tip = self.tip_lamports;
-        let confirm =
-            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        let confirm = crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
         self.wallet_wiz = None;
@@ -2750,8 +2733,7 @@ impl App {
         };
         let plan = sol_clmm_manager::plan_unwrap_sol(payer.pubkey());
         let tip = self.tip_lamports;
-        let confirm =
-            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        let confirm = crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
         self.wallet_wiz = None;
@@ -2849,8 +2831,7 @@ impl App {
         match client.assemble_create_pool(rpc, payer.pubkey(), &params, &settings) {
             Ok((plan, tip_opt, extra)) => {
                 let tip = tip_opt.unwrap_or(tip);
-                let confirm =
-                    crate::write_flow::WriteConfirm::with_tip(plan, extra, tip, tip_opt);
+                let confirm = crate::write_flow::WriteConfirm::with_tip(plan, extra, tip, tip_opt);
                 self.confirm_scroll = 0;
                 self.write_confirm = Some(confirm);
                 self.wallet_wiz = None;
@@ -2880,10 +2861,8 @@ impl App {
             self.status_line = "no claimable fees to compound".into();
             return;
         }
-        let wiz = crate::write_flow::ManageCompoundWizard::from_detail(
-            detail,
-            self.swap_mode.clone(),
-        );
+        let wiz =
+            crate::write_flow::ManageCompoundWizard::from_detail(detail, self.swap_mode.clone());
         self.status_line = wiz.status_hint();
         self.manage_compound = Some(wiz);
         self.screen = Screen::ManageCompound;
@@ -2963,10 +2942,8 @@ impl App {
         };
         let tip = self.tip_lamports;
         let client = Client::new(self.price_mode, self.price_keys());
-        let sol_leg = if sol_clmm_manager::pool_has_wsol(
-            &detail.token_a.mint,
-            &detail.token_b.mint,
-        ) {
+        let sol_leg = if sol_clmm_manager::pool_has_wsol(&detail.token_a.mint, &detail.token_b.mint)
+        {
             sol_clmm_manager::SolLegMode::NativeSol
         } else {
             sol_clmm_manager::SolLegMode::Wsol
@@ -2993,17 +2970,13 @@ impl App {
             self.status_line = format!("{}: no instructions", kind.title());
             return;
         }
-        let mut confirm =
-            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        let mut confirm = crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
         Self::attach_confirm_from_detail(&mut confirm, &detail);
         self.manage_withdraw = None;
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
         self.screen = Screen::WriteConfirm;
-        self.status_line = format!(
-            "{} · ↑↓ priority fee · Enter simulate",
-            kind.title()
-        );
+        self.status_line = format!("{} · ↑↓ priority fee · Enter simulate", kind.title());
     }
 
     #[cfg(feature = "write")]
@@ -3028,10 +3001,7 @@ impl App {
             let Some(w) = self.manage_compound.as_mut() else {
                 return;
             };
-            matches!(
-                w.advance(),
-                crate::write_flow::ManageCompoundAdvance::Ready
-            )
+            matches!(w.advance(), crate::write_flow::ManageCompoundAdvance::Ready)
         };
         if let Some(w) = &self.manage_compound {
             self.status_line = w.status_hint();
@@ -3073,8 +3043,7 @@ impl App {
         settings.swap_mode = Some(router.clone());
         self.swap_mode = router;
         let client = Client::new(self.price_mode, self.price_keys());
-        let result =
-            client.assemble_compound(payer.pubkey(), &detail, with_swap, slip, &settings);
+        let result = client.assemble_compound(payer.pubkey(), &detail, with_swap, slip, &settings);
         let (plan, router_tip) = match result {
             Ok(v) => v,
             Err(e) => {
@@ -3121,10 +3090,7 @@ impl App {
             let Some(w) = self.manage_deposit.as_mut() else {
                 return;
             };
-            matches!(
-                w.advance(),
-                crate::write_flow::ManageDepositAdvance::Ready
-            )
+            matches!(w.advance(), crate::write_flow::ManageDepositAdvance::Ready)
         };
         if let Some(w) = &self.manage_deposit {
             self.status_line = w.status_hint();
@@ -3215,11 +3181,7 @@ impl App {
     }
 
     #[cfg(feature = "write")]
-    fn detail_write_op(
-        &mut self,
-        rpc: &solana_client::rpc_client::RpcClient,
-        kind: ManageChoice,
-    ) {
+    fn detail_write_op(&mut self, rpc: &solana_client::rpc_client::RpcClient, kind: ManageChoice) {
         let Some(detail) = self.detail.clone() else {
             self.status_line = "no detail loaded".into();
             return;
@@ -3242,10 +3204,8 @@ impl App {
         let authority = payer.pubkey();
         let tip = self.tip_lamports;
         let client = Client::new(self.price_mode, self.price_keys());
-        let sol_leg = if sol_clmm_manager::pool_has_wsol(
-            &detail.token_a.mint,
-            &detail.token_b.mint,
-        ) {
+        let sol_leg = if sol_clmm_manager::pool_has_wsol(&detail.token_a.mint, &detail.token_b.mint)
+        {
             sol_clmm_manager::SolLegMode::NativeSol
         } else {
             sol_clmm_manager::SolLegMode::Wsol
@@ -3271,16 +3231,12 @@ impl App {
             self.status_line = format!("{}: no instructions assembled", kind.title());
             return;
         }
-        let mut confirm =
-            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        let mut confirm = crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
         Self::attach_confirm_from_detail(&mut confirm, &detail);
         self.confirm_scroll = 0;
         self.write_confirm = Some(confirm);
         self.screen = Screen::WriteConfirm;
-        self.status_line = format!(
-            "{} · ↑↓ priority fee · Enter simulate",
-            kind.title()
-        );
+        self.status_line = format!("{} · ↑↓ priority fee · Enter simulate", kind.title());
     }
 
     #[cfg(feature = "write")]
@@ -3345,12 +3301,8 @@ impl App {
             &settings,
         ) {
             Ok((plan, router_tip)) => {
-                let mut confirm = crate::write_flow::WriteConfirm::with_tip(
-                    plan,
-                    vec![mint],
-                    tip,
-                    router_tip,
-                );
+                let mut confirm =
+                    crate::write_flow::WriteConfirm::with_tip(plan, vec![mint], tip, router_tip);
                 if let Some(w) = self.create.as_ref()
                     && let Some(p) = w.preview.as_ref()
                 {
@@ -3491,21 +3443,23 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
         thread::spawn(move || {
-            let fetch_bal =
-                |owner: Pubkey, ma: Pubkey, mb: Pubkey| -> Option<sol_clmm_manager::WalletPoolBalances> {
-                    let sol = rpc::connect(&rpc_url);
-                    let meter = RpcMeter::default();
-                    let traced = Rpc::new(&sol, &meter);
-                    sol_clmm_manager::fetch_wallet_pool_balances(&traced, &owner, ma, mb).ok()
-                };
+            let fetch_bal = |owner: Pubkey,
+                             ma: Pubkey,
+                             mb: Pubkey|
+             -> Option<sol_clmm_manager::WalletPoolBalances> {
+                let sol = rpc::connect(&rpc_url);
+                let meter = RpcMeter::default();
+                let traced = Rpc::new(&sol, &meter);
+                sol_clmm_manager::fetch_wallet_pool_balances(&traced, &owner, ma, mb).ok()
+            };
             let bal_before = match (bal_owner, mint_a, mint_b) {
                 (Some(owner), Some(ma), Some(mb)) => fetch_bal(owner, ma, mb),
                 _ => None,
             };
             let result = (|| -> anyhow::Result<sol_clmm_manager::SendOutcome> {
                 let rpc = solana_client::rpc_client::RpcClient::new(rpc_url.clone());
-                let payer = read_keypair_file(&path)
-                    .map_err(|e| anyhow::anyhow!("keypair: {e}"))?;
+                let payer =
+                    read_keypair_file(&path).map_err(|e| anyhow::anyhow!("keypair: {e}"))?;
                 let extras: Vec<solana_keypair::Keypair> = extra_bytes
                     .iter()
                     .map(|b| {
@@ -3515,14 +3469,7 @@ impl App {
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let extra_refs: Vec<&solana_keypair::Keypair> = extras.iter().collect();
                 let client = Client::new(price_mode, keys);
-                client.execute_plan_signers(
-                    &rpc,
-                    &payer,
-                    &extra_refs,
-                    &plan,
-                    &settings,
-                    router_tip,
-                )
+                client.execute_plan_signers(&rpc, &payer, &extra_refs, &plan, &settings, router_tip)
             })();
             // Every successful tx changes SOL / ATA — refresh immediately.
             let balances = if result.is_ok() {
@@ -3663,14 +3610,9 @@ impl App {
             .map(|c| c.extra_signers.iter().collect())
             .unwrap_or_default();
         self.status_line = "simulating…".into();
-        match client.prepare_and_simulate_signers(
-            rpc,
-            &payer,
-            &extras,
-            &plan,
-            &settings,
-            router_tip,
-        ) {
+        match client
+            .prepare_and_simulate_signers(rpc, &payer, &extras, &plan, &settings, router_tip)
+        {
             Ok((prepared, logs)) => {
                 if let Some(c) = self.write_confirm.as_mut() {
                     c.budget_label = Some(prepared.budget.label());
@@ -3692,8 +3634,7 @@ impl App {
                     c.choice = 0;
                 }
                 self.confirm_scroll = 0;
-                self.status_line =
-                    "sim failed · ↑↓ scroll logs · ←→ Change tip / Cancel".into();
+                self.status_line = "sim failed · ↑↓ scroll logs · ←→ Change tip / Cancel".into();
             }
         }
     }
@@ -3796,16 +3737,8 @@ impl App {
             .write_confirm
             .as_ref()
             .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Done);
-        let closed = was_done
-            && matches!(
-                op,
-                Some(sol_clmm_manager::WriteOp::CloseAndClaim)
-            );
-        let created = was_done
-            && matches!(
-                op,
-                Some(sol_clmm_manager::WriteOp::CreatePosition)
-            );
+        let closed = was_done && matches!(op, Some(sol_clmm_manager::WriteOp::CloseAndClaim));
+        let created = was_done && matches!(op, Some(sol_clmm_manager::WriteOp::CreatePosition));
         self.write_confirm = None;
         self.confirm_scroll = 0;
 

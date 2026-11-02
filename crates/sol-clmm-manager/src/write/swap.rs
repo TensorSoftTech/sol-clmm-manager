@@ -246,9 +246,10 @@ fn titan_swap_ixs(
     amount: u64,
     slippage_bps: u16,
 ) -> Result<SwapPlan> {
-    let key = api_key.map(str::trim).filter(|s| !s.is_empty()).context(
-        "Titan swap needs an API key · settings → Titan · developer.titan.exchange",
-    )?;
+    let key = api_key
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("Titan swap needs an API key · settings → Titan · developer.titan.exchange")?;
 
     // Keep WSOL wrapped when depositing into a WSOL CLMM/DLMM pool next.
     let output_wsol = *output_mint

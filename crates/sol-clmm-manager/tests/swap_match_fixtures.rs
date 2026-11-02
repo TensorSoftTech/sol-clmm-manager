@@ -11,8 +11,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use sol_clmm_manager::clmm_math::{
-    amount_a_from_b, amounts_from_liquidity, get_sqrt_price_at_tick, parse_ui_amount,
-    value_a_in_b,
+    amount_a_from_b, amounts_from_liquidity, get_sqrt_price_at_tick, parse_ui_amount, value_a_in_b,
 };
 use sol_clmm_manager::pricing::human_price_b_per_a;
 use sol_clmm_manager::{
@@ -270,8 +269,7 @@ fn fixture_deposit_cases() {
                 "{}: expected no swap, got {hint:?}",
                 case.id
             );
-            let plan =
-                liquidity_delta_for_open(amount_a, amount_b, sp, lo, hi, shape, false);
+            let plan = liquidity_delta_for_open(amount_a, amount_b, sp, lo, hi, shape, false);
             assert!(
                 plan.liquidity_delta > 0,
                 "{}: out-of-range open should work · {}",

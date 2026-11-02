@@ -2,9 +2,9 @@
 
 use sol_clmm_manager::{
     CreatePositionParams, DepositAnalysis, DepositShape, DepositSizing, DlmmStrategy, PoolPreview,
-    RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan, amounts_for_liquidity_delta,
-    analyze_deposit, compound_fee_plan, distribute_bins, format_amount, format_price, is_wsol,
-    parse_ui_amount, pool_has_wsol, range_deposit_side,
+    RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan,
+    amounts_for_liquidity_delta, analyze_deposit, compound_fee_plan, distribute_bins,
+    format_amount, format_price, is_wsol, parse_ui_amount, pool_has_wsol, range_deposit_side,
 };
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -56,10 +56,7 @@ impl SlippagePick {
                 "use recommended · Jupiter RTSE (auto)".into()
             }
             Self::Recommended => "use recommended · Titan → 50 bps".into(),
-            Self::Default50 => format!(
-                "use default · {}",
-                CreateWizard::slippage_label(50)
-            ),
+            Self::Default50 => format!("use default · {}", CreateWizard::slippage_label(50)),
             Self::Fixed(b) => CreateWizard::slippage_label(b),
         }
     }
@@ -77,7 +74,11 @@ pub enum DepositMode {
 }
 
 impl DepositMode {
-    pub const ALL: [DepositMode; 3] = [DepositMode::Dual, DepositMode::SingleA, DepositMode::SingleB];
+    pub const ALL: [DepositMode; 3] = [
+        DepositMode::Dual,
+        DepositMode::SingleA,
+        DepositMode::SingleB,
+    ];
 
     pub fn from_idx(i: usize) -> Self {
         Self::ALL[i % 3]
@@ -333,8 +334,7 @@ impl CreateWizard {
         }
     }
 
-    pub const PROGRESS_STAGES: [&'static str; 5] =
-        ["venue", "pool", "range", "side", "review"];
+    pub const PROGRESS_STAGES: [&'static str; 5] = ["venue", "pool", "range", "side", "review"];
 
     pub fn needs_amount_a(&self) -> bool {
         matches!(self.shape, DepositShape::Dual | DepositShape::SingleA)
@@ -474,7 +474,8 @@ impl CreateWizard {
             0
         };
         let b = if self.needs_amount_b() && !self.amount_b_input.trim().is_empty() {
-            self.parse_amount_clamped(&self.amount_b_input, false).ok()?
+            self.parse_amount_clamped(&self.amount_b_input, false)
+                .ok()?
         } else {
             0
         };
@@ -586,8 +587,7 @@ impl CreateWizard {
             DepositMode::SingleB => false,
         };
         let primary = self.parse_amount_clamped(ui, primary_a)?;
-        self.deposit_amount_input =
-            format_amount(primary as u128, self.decimals_for(primary_a));
+        self.deposit_amount_input = format_amount(primary as u128, self.decimals_for(primary_a));
         let (a, b) = self.draft_amounts();
         if mode == DepositMode::Dual {
             let (other, other_a) = if primary_a { (b, false) } else { (a, true) };
@@ -753,9 +753,8 @@ impl CreateWizard {
                     if an.shape_ok_without_swap {
                         lines.push("ok · 2-side auto-fill matches range".into());
                     } else {
-                        lines.push(
-                            "! range is 1-token · pick matching 1-side or move ticks".into(),
-                        );
+                        lines
+                            .push("! range is 1-token · pick matching 1-side or move ticks".into());
                     }
                 }
                 DepositMode::SingleA | DepositMode::SingleB => {
@@ -780,10 +779,7 @@ impl CreateWizard {
                             lines.push(format!("will autoswap · {}", an.note));
                         }
                     } else if an.liquidity_no_swap > 0 {
-                        lines.push(format!(
-                            "ok · 1-side fits · ΔL {}",
-                            an.liquidity_no_swap
-                        ));
+                        lines.push(format!("ok · 1-side fits · ΔL {}", an.liquidity_no_swap));
                     }
                 }
             }
@@ -1026,9 +1022,7 @@ impl CreateWizard {
                         "Jupiter RTSE estimates optimal slip at quote time (recommended)".into(),
                     );
                 } else {
-                    out.push(
-                        "Titan: no RTSE string · recommended maps to 50 bps fixed".into(),
-                    );
+                    out.push("Titan: no RTSE string · recommended maps to 50 bps fixed".into());
                 }
                 out.push(String::new());
                 let picks = self.slippage_picks();
@@ -1327,7 +1321,11 @@ impl CreateWizard {
             }
             CreateStep::SwapSlippage => {
                 let n = self.slippage_picks().len();
-                self.choice = if self.choice == 0 { n - 1 } else { self.choice - 1 };
+                self.choice = if self.choice == 0 {
+                    n - 1
+                } else {
+                    self.choice - 1
+                };
                 self.swap_slippage_idx = self.choice;
             }
             CreateStep::SolLeg => {
@@ -1335,7 +1333,11 @@ impl CreateWizard {
             }
             CreateStep::DlmmStrategy => {
                 let n = DlmmStrategy::ALL.len();
-                self.dlmm_idx = if self.dlmm_idx == 0 { n - 1 } else { self.dlmm_idx - 1 };
+                self.dlmm_idx = if self.dlmm_idx == 0 {
+                    n - 1
+                } else {
+                    self.dlmm_idx - 1
+                };
                 self.choice = self.dlmm_idx;
             }
             CreateStep::Range => {
@@ -1450,7 +1452,10 @@ impl CreateWizard {
             .trim()
             .parse()
             .map_err(|_| "invalid pool pubkey".to_string())?;
-        let preview = self.preview.as_ref().ok_or_else(|| "pool not loaded".to_string())?;
+        let preview = self
+            .preview
+            .as_ref()
+            .ok_or_else(|| "pool not loaded".to_string())?;
         let tick_lower = preview.tick_lower;
         let tick_upper = preview.tick_upper;
         if tick_lower >= tick_upper {
@@ -1756,11 +1761,15 @@ impl ManageDepositWizard {
                 out.push(self.range_side().label(&self.symbol_a, &self.symbol_b));
                 match self.mode {
                     DepositMode::Dual => {
-                        out.push("2-side · pair autofilled from range ratio (0 if out of range)".into());
+                        out.push(
+                            "2-side · pair autofilled from range ratio (0 if out of range)".into(),
+                        );
                     }
                     DepositMode::SingleA | DepositMode::SingleB => match self.range_side() {
                         RangeDepositSide::Both => {
-                            out.push("1-side in-range · proportional autoswap to match ratio".into());
+                            out.push(
+                                "1-side in-range · proportional autoswap to match ratio".into(),
+                            );
                         }
                         side => {
                             let need_a = side == RangeDepositSide::TokenAOnly;
@@ -1805,7 +1814,11 @@ impl ManageDepositWizard {
                 ));
                 out.push(String::new());
                 for (i, pick) in self.slippage_picks().iter().enumerate() {
-                    let mark = if i == self.swap_slippage_choice { "▸" } else { " " };
+                    let mark = if i == self.swap_slippage_choice {
+                        "▸"
+                    } else {
+                        " "
+                    };
                     out.push(format!("{mark} {}", pick.label(&self.swap_router)));
                 }
             }
@@ -1967,12 +1980,11 @@ impl ManageDepositWizard {
             DepositMode::Dual => {
                 if primary_a {
                     self.amount_a_input = primary_ui;
-                    let mut b = if ua > 0 {
-                        (u128::from(primary).saturating_mul(ub) / ua).min(u128::from(u64::MAX))
-                            as u64
-                    } else {
-                        0
-                    };
+                    let mut b = u128::from(primary)
+                        .saturating_mul(ub)
+                        .checked_div(ua)
+                        .unwrap_or(0)
+                        .min(u128::from(u64::MAX)) as u64;
                     if let Some(bal) = &self.balances {
                         let max_b = bal.max_depositable(false, self.use_native_for_max());
                         if b > max_b {
@@ -1988,12 +2000,11 @@ impl ManageDepositWizard {
                     self.amount_b_input = format_amount(u128::from(b), self.decimals_b);
                 } else {
                     self.amount_b_input = primary_ui;
-                    let mut a = if ub > 0 {
-                        (u128::from(primary).saturating_mul(ua) / ub).min(u128::from(u64::MAX))
-                            as u64
-                    } else {
-                        0
-                    };
+                    let mut a = u128::from(primary)
+                        .saturating_mul(ua)
+                        .checked_div(ub)
+                        .unwrap_or(0)
+                        .min(u128::from(u64::MAX)) as u64;
                     if let Some(bal) = &self.balances {
                         let max_a = bal.max_depositable(true, self.use_native_for_max());
                         if a > max_a {
@@ -2142,7 +2153,7 @@ impl ManageWithdrawWizard {
         }
         let v: f64 = raw
             .parse()
-            .map_err(|_| format!("invalid % · type e.g. 34.5"))?;
+            .map_err(|_| "invalid % · type e.g. 34.5".to_string())?;
         if !(0.0..=100.0).contains(&v) {
             return Err("% must be 0…100".into());
         }
@@ -2230,7 +2241,11 @@ impl ManageWithdrawWizard {
                 .join(" · ")
         ));
         out.push(String::new());
-        match (self.pct_f64(), self.preview_amounts(), self.liquidity_delta()) {
+        match (
+            self.pct_f64(),
+            self.preview_amounts(),
+            self.liquidity_delta(),
+        ) {
             (Ok(pct), Ok((pa, pb)), Ok(liq)) => {
                 out.push(format!(
                     "≈ receive · {} {} · {} {} · {pct}% · ΔL={liq}",
@@ -2244,8 +2259,7 @@ impl ManageWithdrawWizard {
                 out.push(format!("≈ receive · ({e})"));
             }
         }
-        if matches!(self.kind, WithdrawKind::ClaimWithdraw) && (self.fee_a > 0 || self.fee_b > 0)
-        {
+        if matches!(self.kind, WithdrawKind::ClaimWithdraw) && (self.fee_a > 0 || self.fee_b > 0) {
             out.push("(+ fees claimed into wallet in the same tx)".into());
         }
         out
@@ -2395,9 +2409,7 @@ impl ManageCompoundWizard {
 
     pub fn status_hint(&self) -> String {
         match self.step {
-            ManageCompoundStep::Mode => {
-                "compound · ↑↓ no-swap / with-swap · Enter · Esc".into()
-            }
+            ManageCompoundStep::Mode => "compound · ↑↓ no-swap / with-swap · Enter · Esc".into(),
             ManageCompoundStep::SwapSlippage => {
                 format!(
                     "compound slippage · Tab {} ↔ · ↑↓ · Enter",
@@ -2431,10 +2443,12 @@ impl ManageCompoundWizard {
         match self.step {
             ManageCompoundStep::Mode => {
                 out.push("mode".into());
-                for (i, label) in ["no-swap · limiting fee ratio · residual stays",
-                    "with-swap · residual → Jupiter / Titan then deposit"]
-                    .iter()
-                    .enumerate()
+                for (i, label) in [
+                    "no-swap · limiting fee ratio · residual stays",
+                    "with-swap · residual → Jupiter / Titan then deposit",
+                ]
+                .iter()
+                .enumerate()
                 {
                     let mark = if i == self.choice { "▸" } else { " " };
                     out.push(format!("{mark} {label}"));
@@ -2730,6 +2744,7 @@ impl WriteConfirm {
     }
 
     /// Attach position + pool identity for sqlite history.
+    #[allow(clippy::too_many_arguments)]
     pub fn attach_pool_context(
         &mut self,
         position: Option<&str>,
@@ -2789,7 +2804,11 @@ impl WriteConfirm {
         if up {
             self.choice = (self.choice + 1) % n;
         } else {
-            self.choice = if self.choice == 0 { n - 1 } else { self.choice - 1 };
+            self.choice = if self.choice == 0 {
+                n - 1
+            } else {
+                self.choice - 1
+            };
         }
         self.apply_tip_choice();
     }

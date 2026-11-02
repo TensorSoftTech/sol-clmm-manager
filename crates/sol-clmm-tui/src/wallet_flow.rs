@@ -3,8 +3,8 @@
 #![cfg(feature = "write")]
 
 use sol_clmm_manager::{
-    CreatePoolMode, CreatePoolParams, DepositShape, DlmmStrategy, SolLegMode, Venue,
-    WalletTokenBalance, WSOL, format_amount, parse_ui_amount, popular_swap_mints, wsol_mint,
+    CreatePoolMode, CreatePoolParams, DepositShape, DlmmStrategy, SolLegMode, Venue, WSOL,
+    WalletTokenBalance, format_amount, parse_ui_amount, popular_swap_mints, wsol_mint,
 };
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -18,12 +18,7 @@ pub enum WalletMenu {
 }
 
 impl WalletMenu {
-    pub const ALL: [WalletMenu; 4] = [
-        Self::Wrap,
-        Self::Unwrap,
-        Self::Swap,
-        Self::CreatePool,
-    ];
+    pub const ALL: [WalletMenu; 4] = [Self::Wrap, Self::Unwrap, Self::Swap, Self::CreatePool];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -130,7 +125,13 @@ impl WalletWizard {
             .tokens
             .iter()
             .take(6)
-            .map(|t| format!("{} {}", t.symbol, format_amount(u128::from(t.amount), t.decimals)))
+            .map(|t| {
+                format!(
+                    "{} {}",
+                    t.symbol,
+                    format_amount(u128::from(t.amount), t.decimals)
+                )
+            })
             .collect();
         if !top.is_empty() {
             out.push(top.join(" · "));
@@ -161,7 +162,11 @@ impl WalletWizard {
             return;
         }
         let n = WalletMenu::ALL.len();
-        self.menu_choice = if self.menu_choice == 0 { n - 1 } else { self.menu_choice - 1 };
+        self.menu_choice = if self.menu_choice == 0 {
+            n - 1
+        } else {
+            self.menu_choice - 1
+        };
     }
 
     pub fn down(&mut self) {
@@ -377,7 +382,10 @@ impl SwapWizard {
                 out.push(format!(
                     "{} → {}",
                     from.symbol,
-                    self.to_options.get(self.to_idx).map(|t| t.symbol.as_str()).unwrap_or("?")
+                    self.to_options
+                        .get(self.to_idx)
+                        .map(|t| t.symbol.as_str())
+                        .unwrap_or("?")
                 ));
                 out.push(format!(
                     "max {} {}",
@@ -681,8 +689,7 @@ impl CreatePoolWizard {
                     out.push(format!("mode · {}", p.mode.label()));
                     if p.mode != CreatePoolMode::PoolOnly {
                         out.push(
-                            "seed deposit: after pool lands, use n create on the new pool"
-                                .into(),
+                            "seed deposit: after pool lands, use n create on the new pool".into(),
                         );
                     }
                 }
@@ -695,7 +702,11 @@ impl CreatePoolWizard {
     pub fn up(&mut self) {
         match self.step {
             CreatePoolStep::Venue => {
-                self.venue_idx = if self.venue_idx == 0 { 2 } else { self.venue_idx - 1 };
+                self.venue_idx = if self.venue_idx == 0 {
+                    2
+                } else {
+                    self.venue_idx - 1
+                };
             }
             CreatePoolStep::MintA if !self.mint_options.is_empty() => {
                 self.mint_a_idx = if self.mint_a_idx == 0 {
@@ -792,7 +803,11 @@ impl CreatePoolWizard {
                 Ok(None)
             }
             CreatePoolStep::FeeParam => {
-                let _ = self.fee_input.trim().parse::<u16>().map_err(|_| "fee param u16")?;
+                let _ = self
+                    .fee_input
+                    .trim()
+                    .parse::<u16>()
+                    .map_err(|_| "fee param u16")?;
                 self.step = CreatePoolStep::Price;
                 Ok(None)
             }
@@ -827,16 +842,8 @@ impl CreatePoolWizard {
             .get(self.mint_b_idx)
             .ok_or("mint B")?
             .clone();
-        let fee_param: u16 = self
-            .fee_input
-            .trim()
-            .parse()
-            .map_err(|_| "fee param")?;
-        let initial_price: f64 = self
-            .price_input
-            .trim()
-            .parse()
-            .map_err(|_| "price")?;
+        let fee_param: u16 = self.fee_input.trim().parse().map_err(|_| "fee param")?;
+        let initial_price: f64 = self.price_input.trim().parse().map_err(|_| "price")?;
         Ok(CreatePoolParams {
             venue: self.venue(),
             mint_a: a.mint,

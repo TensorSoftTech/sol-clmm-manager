@@ -35,12 +35,12 @@ impl RangeDepositSide {
     }
 
     pub fn shape_fits_without_swap(self, shape: DepositShape) -> bool {
-        match (self, shape) {
-            (Self::Both, DepositShape::Dual) => true,
-            (Self::TokenAOnly, DepositShape::SingleA | DepositShape::Dual) => true,
-            (Self::TokenBOnly, DepositShape::SingleB | DepositShape::Dual) => true,
-            _ => false,
-        }
+        matches!(
+            (self, shape),
+            (Self::Both, DepositShape::Dual)
+                | (Self::TokenAOnly, DepositShape::SingleA | DepositShape::Dual)
+                | (Self::TokenBOnly, DepositShape::SingleB | DepositShape::Dual)
+        )
     }
 }
 
@@ -140,22 +140,10 @@ pub fn analyze_deposit(
     let shape_ok = side.shape_fits_without_swap(user_shape);
     let (no_swap, with_swap, swap) = if sqrt_price > 0 {
         let no_swap = liquidity_delta_for_open(
-            amount_a,
-            amount_b,
-            sqrt_price,
-            tick_lower,
-            tick_upper,
-            shape,
-            false,
+            amount_a, amount_b, sqrt_price, tick_lower, tick_upper, shape, false,
         );
         let with_swap = liquidity_delta_for_open(
-            amount_a,
-            amount_b,
-            sqrt_price,
-            tick_lower,
-            tick_upper,
-            shape,
-            true,
+            amount_a, amount_b, sqrt_price, tick_lower, tick_upper, shape, true,
         );
         let swap = swap_to_match_hint(
             amount_a.min(u128::from(u64::MAX)) as u64,
@@ -335,7 +323,11 @@ pub fn amounts_for_liquidity_delta(
 }
 
 /// Coerce dual → single when only one side has a budget (avoids L=0 open-only creates).
-pub fn effective_deposit_shape(amount_a: u128, amount_b: u128, shape: DepositShape) -> DepositShape {
+pub fn effective_deposit_shape(
+    amount_a: u128,
+    amount_b: u128,
+    shape: DepositShape,
+) -> DepositShape {
     match shape {
         DepositShape::Dual if amount_a > 0 && amount_b == 0 => DepositShape::SingleA,
         DepositShape::Dual if amount_b > 0 && amount_a == 0 => DepositShape::SingleB,
@@ -461,31 +453,26 @@ pub fn liquidity_delta_for_open(
 ) -> LiquidityDeltaPlan {
     let shape = effective_deposit_shape(amount_a, amount_b, shape);
 
-    if swap_to_match {
-        if let Some((post_a, post_b)) =
-            estimate_post_swap_amounts(amount_a, amount_b, sqrt_price, tick_lower, tick_upper, shape)
-        {
-            let mut plan = liquidity_delta_from_amounts(
-                post_a,
-                post_b,
-                sqrt_price,
-                tick_lower,
-                tick_upper,
-                DepositShape::Dual,
-            );
-            plan.note = format!("swap-to-match · {}", plan.note);
-            return plan;
-        }
-        // No swap needed (already matched / out-of-range single-side) — fall through.
+    if swap_to_match
+        && let Some((post_a, post_b)) = estimate_post_swap_amounts(
+            amount_a, amount_b, sqrt_price, tick_lower, tick_upper, shape,
+        )
+    {
+        let mut plan = liquidity_delta_from_amounts(
+            post_a,
+            post_b,
+            sqrt_price,
+            tick_lower,
+            tick_upper,
+            DepositShape::Dual,
+        );
+        plan.note = format!("swap-to-match · {}", plan.note);
+        return plan;
     }
+    // No swap needed (already matched / out-of-range single-side) — fall through.
 
     let plan = liquidity_delta_from_amounts(
-        amount_a,
-        amount_b,
-        sqrt_price,
-        tick_lower,
-        tick_upper,
-        shape,
+        amount_a, amount_b, sqrt_price, tick_lower, tick_upper, shape,
     );
     if plan.liquidity_delta == 0 {
         return plan;
@@ -782,10 +769,8 @@ pub fn swap_to_match_hint(
             let val_a = value_a_in_b(u128::from(amount_a), sqrt_price);
             let val_total = val_a.saturating_add(u128::from(amount_b));
             // Post-swap amounts at unit ratio with the same spot value.
-            let target_a =
-                (val_total.saturating_mul(ua) / denom).min(u128::from(u64::MAX)) as u64;
-            let target_b =
-                (val_total.saturating_mul(ub) / denom).min(u128::from(u64::MAX)) as u64;
+            let target_a = (val_total.saturating_mul(ua) / denom).min(u128::from(u64::MAX)) as u64;
+            let target_b = (val_total.saturating_mul(ub) / denom).min(u128::from(u64::MAX)) as u64;
             let excess_a = amount_a.saturating_sub(target_a);
             let excess_b = amount_b.saturating_sub(target_b);
             if excess_a == 0 && excess_b == 0 {
@@ -883,15 +868,8 @@ mod liq_shape_tests {
     fn single_b_above_range_small_budget() {
         // price above range → only B; modest USDC must yield L>0 (was 0 with 64-iter search).
         let sp = get_sqrt_price_at_tick(-19000).unwrap();
-        let plan = liquidity_delta_for_open(
-            0,
-            217_989,
-            sp,
-            -23544,
-            -23472,
-            DepositShape::SingleB,
-            false,
-        );
+        let plan =
+            liquidity_delta_for_open(0, 217_989, sp, -23544, -23472, DepositShape::SingleB, false);
         assert!(plan.liquidity_delta > 0, "note={}", plan.note);
         assert_eq!(plan.amount_a, 0);
         assert!(plan.amount_b > 0 && plan.amount_b <= 217_989);
@@ -900,15 +878,8 @@ mod liq_shape_tests {
     #[test]
     fn single_b_in_range_without_swap_is_zero() {
         let sp = get_sqrt_price_at_tick(-23500).unwrap();
-        let plan = liquidity_delta_for_open(
-            0,
-            217_989,
-            sp,
-            -23544,
-            -23472,
-            DepositShape::SingleB,
-            false,
-        );
+        let plan =
+            liquidity_delta_for_open(0, 217_989, sp, -23544, -23472, DepositShape::SingleB, false);
         assert_eq!(plan.liquidity_delta, 0);
     }
 
@@ -931,15 +902,8 @@ mod liq_shape_tests {
     #[test]
     fn dual_a0_b_coerces_above_range() {
         let sp = get_sqrt_price_at_tick(-19000).unwrap();
-        let plan = liquidity_delta_for_open(
-            0,
-            217_989,
-            sp,
-            -23544,
-            -23472,
-            DepositShape::Dual,
-            false,
-        );
+        let plan =
+            liquidity_delta_for_open(0, 217_989, sp, -23544, -23472, DepositShape::Dual, false);
         assert_eq!(plan.shape, DepositShape::SingleB);
         assert!(plan.liquidity_delta > 0);
     }
@@ -1137,15 +1101,9 @@ mod liq_shape_tests {
             let lower = tick - half;
             let upper = tick + half;
             let budget = 10_000_000u128;
-            let hint = swap_to_match_hint(
-                0,
-                budget as u64,
-                sp,
-                lower,
-                upper,
-                DepositShape::SingleB,
-            )
-            .unwrap();
+            let hint =
+                swap_to_match_hint(0, budget as u64, sp, lower, upper, DepositShape::SingleB)
+                    .unwrap();
             let (pa, pb) = post_swap_from_hint(0, budget, sp, hint);
             let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
             let err = ratio_err(pa, pb, ua, ub);
@@ -1182,10 +1140,13 @@ mod liq_shape_tests {
         let tick = -23536;
         let sp = get_sqrt_price_at_tick(tick).unwrap();
         let amount_a = 100_000_000u64;
-        let hint = swap_to_match_hint(amount_a, 0, sp, lower, upper, DepositShape::SingleA)
-            .unwrap();
+        let hint =
+            swap_to_match_hint(amount_a, 0, sp, lower, upper, DepositShape::SingleA).unwrap();
         let frac = hint.swap_in_amount as f64 / amount_a as f64;
-        assert!(frac < 0.45, "A-heavy should swap under half of A, got {frac:.3}");
+        assert!(
+            frac < 0.45,
+            "A-heavy should swap under half of A, got {frac:.3}"
+        );
     }
 
     #[test]
@@ -1209,7 +1170,10 @@ mod liq_shape_tests {
         let (pa, pb) = post_swap_from_hint(budget, 0, sp, hint);
         let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
         let err = ratio_err(pa, pb, ua, ub);
-        assert!(err < 0.02, "ratio err {err:.4} post=({pa},{pb}) unit=({ua},{ub})");
+        assert!(
+            err < 0.02,
+            "ratio err {err:.4} post=({pa},{pb}) unit=({ua},{ub})"
+        );
     }
 
     // ── Dual rebalance ───────────────────────────────────────────────────
@@ -1236,7 +1200,10 @@ mod liq_shape_tests {
             Some(h) => {
                 let base = if h.in_is_a { a2 } else { b2 };
                 let dust = h.swap_in_amount as f64 / base as f64;
-                assert!(dust < 0.002, "scaled match only allows dust swap, got {dust:.4}");
+                assert!(
+                    dust < 0.002,
+                    "scaled match only allows dust swap, got {dust:.4}"
+                );
             }
         }
     }
@@ -1254,7 +1221,10 @@ mod liq_shape_tests {
         assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < b);
         let (pa, pb) = post_swap_from_hint(u128::from(a), u128::from(b), sp, hint);
         let err = ratio_err(pa, pb, ua, ub);
-        assert!(err < 0.05, "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})");
+        assert!(
+            err < 0.05,
+            "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})"
+        );
     }
 
     #[test]
@@ -1270,7 +1240,10 @@ mod liq_shape_tests {
         assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < a);
         let (pa, pb) = post_swap_from_hint(u128::from(a), u128::from(b), sp, hint);
         let err = ratio_err(pa, pb, ua, ub);
-        assert!(err < 0.05, "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})");
+        assert!(
+            err < 0.05,
+            "post-swap ratio err {err:.4} ({pa},{pb}) vs ({ua},{ub})"
+        );
     }
 
     /// Compound-shaped fees: lots of SOL + dust USDC. Raw scale_a/scale_b swapped
@@ -1283,8 +1256,7 @@ mod liq_shape_tests {
         let upper = tick + 128;
         let fee_a = 54_600_000u64; // 0.0546 SOL
         let fee_b = 391u64; // 0.000391 USDC
-        let hint =
-            swap_to_match_hint(fee_a, fee_b, sp, lower, upper, DepositShape::Dual).unwrap();
+        let hint = swap_to_match_hint(fee_a, fee_b, sp, lower, upper, DepositShape::Dual).unwrap();
         assert!(
             hint.in_is_a,
             "must swap SOL→USDC, not dust USDC→SOL (got in_is_a={})",
@@ -1292,8 +1264,7 @@ mod liq_shape_tests {
         );
         assert!(hint.swap_in_amount > 0 && hint.swap_in_amount < fee_a);
         let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
-        let (pa, pb) =
-            post_swap_from_hint(u128::from(fee_a), u128::from(fee_b), sp, hint);
+        let (pa, pb) = post_swap_from_hint(u128::from(fee_a), u128::from(fee_b), sp, hint);
         let err = ratio_err(pa, pb, ua, ub);
         assert!(
             err < 0.05,
@@ -1318,15 +1289,8 @@ mod liq_shape_tests {
         let lower = tick - 64;
         let upper = tick + 64;
         let budget = 2_000_000u128; // 2 USDC
-        let plan = liquidity_delta_for_open(
-            0,
-            budget,
-            sp,
-            lower,
-            upper,
-            DepositShape::SingleB,
-            true,
-        );
+        let plan =
+            liquidity_delta_for_open(0, budget, sp, lower, upper, DepositShape::SingleB, true);
         assert!(plan.liquidity_delta > 0, "note={}", plan.note);
         assert!(plan.amount_a > 0 && plan.amount_b > 0);
         let (ua, ub) = deposit_ratio_planner(sp, lower, upper, 1u128 << 48);
@@ -1351,15 +1315,8 @@ mod liq_shape_tests {
         let lower = tick - 64;
         let upper = tick + 64;
         let budget = 200_000_000u128; // 0.2 SOL
-        let plan = liquidity_delta_for_open(
-            budget,
-            0,
-            sp,
-            lower,
-            upper,
-            DepositShape::SingleA,
-            true,
-        );
+        let plan =
+            liquidity_delta_for_open(budget, 0, sp, lower, upper, DepositShape::SingleA, true);
         assert!(plan.liquidity_delta > 0, "note={}", plan.note);
         let a_left_frac = plan.amount_a as f64 / budget as f64;
         assert!(
@@ -1374,15 +1331,7 @@ mod liq_shape_tests {
         let lower = tick - 64;
         let upper = tick + 64;
         let budget = 1_000_000u128;
-        let an = analyze_deposit(
-            0,
-            budget,
-            sp,
-            lower,
-            upper,
-            tick,
-            DepositShape::SingleB,
-        );
+        let an = analyze_deposit(0, budget, sp, lower, upper, tick, DepositShape::SingleB);
         assert!(an.swap_needed);
         assert!(!an.shape_ok_without_swap);
         assert!(an.liquidity_with_swap > an.liquidity_no_swap);
@@ -1460,12 +1409,7 @@ mod liq_shape_tests {
         assert_eq!(p.residual_b, 0);
         assert_eq!(p.residual_a, fee_a - p.deposit_a);
         // Deposited ratio ≈ unit ratio.
-        let err = ratio_err(
-            u128::from(p.deposit_a),
-            u128::from(p.deposit_b),
-            ua,
-            ub,
-        );
+        let err = ratio_err(u128::from(p.deposit_a), u128::from(p.deposit_b), ua, ub);
         assert!(err < 0.02, "ratio err {err}");
     }
 

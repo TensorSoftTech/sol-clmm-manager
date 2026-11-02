@@ -86,7 +86,9 @@ fn draw_create_position(frame: &mut Frame, app: &mut App) {
 
         // Fit content height — avoid a huge empty bordered panel.
         let body_inner = (body_lines.len() as u16).saturating_add(1).max(4);
-        let body_h = body_inner.saturating_add(2).min(area.height.saturating_sub(FOOTER_H + 4));
+        let body_h = body_inner
+            .saturating_add(2)
+            .min(area.height.saturating_sub(FOOTER_H + 4));
 
         if show_chart {
             let chunks = Layout::default()
@@ -265,17 +267,17 @@ fn draw_manage(frame: &mut Frame, app: &mut App) {
                 format!("{}  +  {}", d.amount_a_ui, d.amount_b_ui),
                 theme::body(),
             ),
-            Span::styled(
-                format!("  · L={}", d.position_liquidity),
-                theme::dim(),
-            ),
+            Span::styled(format!("  · L={}", d.position_liquidity), theme::dim()),
         ]));
         head.push(Line::from(Span::styled(
             "p · full position + pool pubkey in status (copy)",
             theme::muted(),
         )));
     }
-    frame.render_widget(Paragraph::new(head).block(panel("context", false)), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(head).block(panel("context", false)),
+        chunks[0],
+    );
 
     let items: Vec<ListItem> = crate::app::ManageChoice::ALL
         .iter()
@@ -363,10 +365,7 @@ fn draw_wallet(frame: &mut Frame, app: &mut App) {
         Some(w) if w.create_pool.is_some() => "wallet · create pool",
         _ => "wallet · wrap · unwrap · swap · create pool",
     };
-    frame.render_widget(
-        Paragraph::new(lines).block(panel(title, false)),
-        chunks[0],
-    );
+    frame.render_widget(Paragraph::new(lines).block(panel(title, false)), chunks[0]);
     draw_footer(frame, app, chunks[1]);
 }
 
@@ -425,49 +424,49 @@ fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
             .block(panel("confirm write", false)),
             area,
         );
-        return;
     }
     #[cfg(feature = "write")]
     {
-    let tip_phase = app.write_confirm.as_ref().is_some_and(|c| {
-        c.phase == crate::write_flow::ConfirmPhase::Tip
-    });
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if tip_phase {
-            // Room for priority-fee preset list.
-            [
-                Constraint::Length(6),
-                Constraint::Min(12),
-                Constraint::Length(FOOTER_H),
-            ]
-        } else {
-            [
-                Constraint::Length(10),
-                Constraint::Min(8),
-                Constraint::Length(FOOTER_H),
-            ]
-        })
-        .split(area);
+        let tip_phase = app
+            .write_confirm
+            .as_ref()
+            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Tip);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(if tip_phase {
+                // Room for priority-fee preset list.
+                [
+                    Constraint::Length(6),
+                    Constraint::Min(12),
+                    Constraint::Length(FOOTER_H),
+                ]
+            } else {
+                [
+                    Constraint::Length(10),
+                    Constraint::Min(8),
+                    Constraint::Length(FOOTER_H),
+                ]
+            })
+            .split(area);
 
-    let busy = app
-        .write_confirm
-        .as_ref()
-        .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy);
-    if busy {
-        draw_panel_load(
-            frame,
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
-                .split(area)[0],
-            app.load_bar_ratio(),
-            "confirm write",
-            "sending · waiting for confirmation…",
-        );
-        draw_footer(frame, app, chunks[2]);
-        return;
-    }
+        let busy = app
+            .write_confirm
+            .as_ref()
+            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy);
+        if busy {
+            draw_panel_load(
+                frame,
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+                    .split(area)[0],
+                app.load_bar_ratio(),
+                "confirm write",
+                "sending · waiting for confirmation…",
+            );
+            draw_footer(frame, app, chunks[2]);
+            return;
+        }
 
         let Some(c) = &app.write_confirm else {
             frame.render_widget(
@@ -643,10 +642,7 @@ fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
             }
             crate::write_flow::ConfirmPhase::Done => {
                 if let Some(sig) = c.signature.as_deref() {
-                    log_lines.push(Line::from(Span::styled(
-                        format!("tx {sig}"),
-                        theme::body(),
-                    )));
+                    log_lines.push(Line::from(Span::styled(format!("tx {sig}"), theme::body())));
                 }
                 log_lines.push(Line::from(Span::styled(
                     "p · full pubkey / tx in status · Enter / Esc back",
@@ -2343,11 +2339,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
                     .or(r.paid_label.as_deref())
                     .unwrap_or("—");
                 let note = truncate_history_note(note, 96);
-                let pool = if scoped {
-                    "·".into()
-                } else {
-                    r.pair_label()
-                };
+                let pool = if scoped { "·".into() } else { r.pair_label() };
                 Row::new([
                     Cell::from(r.time_label()),
                     Cell::from(Span::styled(r.op.clone(), theme::accent_text())),

@@ -207,8 +207,14 @@ impl WriteTxRow {
         let tokens = self.token_delta_label();
         if tokens != "—" {
             // If neither leg is SOL/WSOL, prepend native spend when known.
-            let has_sol_leg = self.symbol_a.as_deref().is_some_and(|s| s == "SOL" || s == "WSOL")
-                || self.symbol_b.as_deref().is_some_and(|s| s == "SOL" || s == "WSOL");
+            let has_sol_leg = self
+                .symbol_a
+                .as_deref()
+                .is_some_and(|s| s == "SOL" || s == "WSOL")
+                || self
+                    .symbol_b
+                    .as_deref()
+                    .is_some_and(|s| s == "SOL" || s == "WSOL");
             if has_sol_leg {
                 tokens
             } else {
@@ -593,11 +599,7 @@ impl Store {
     }
 
     /// Newest-first write history. `position` filters to one position pubkey when set.
-    pub fn list_write_txs(
-        &self,
-        limit: usize,
-        position: Option<&str>,
-    ) -> Result<Vec<WriteTxRow>> {
+    pub fn list_write_txs(&self, limit: usize, position: Option<&str>) -> Result<Vec<WriteTxRow>> {
         let lim = limit.clamp(1, 5_000) as i64;
         let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<WriteTxRow> {
             Ok(WriteTxRow {
@@ -609,27 +611,17 @@ impl Store {
                 position: row.get(5)?,
                 pool: row.get(6)?,
                 pool_label: row.get(7)?,
-                tip_lamports: row
-                    .get::<_, Option<i64>>(8)?
-                    .map(|v| v.max(0) as u64),
-                fee_lamports: row
-                    .get::<_, Option<i64>>(9)?
-                    .map(|v| v.max(0) as u64),
-                sol_spent_lamports: row
-                    .get::<_, Option<i64>>(10)?
-                    .map(|v| v.max(0) as u64),
+                tip_lamports: row.get::<_, Option<i64>>(8)?.map(|v| v.max(0) as u64),
+                fee_lamports: row.get::<_, Option<i64>>(9)?.map(|v| v.max(0) as u64),
+                sol_spent_lamports: row.get::<_, Option<i64>>(10)?.map(|v| v.max(0) as u64),
                 summary: row.get(11)?,
                 paid_label: row.get(12)?,
                 mint_a: row.get(13)?,
                 mint_b: row.get(14)?,
                 symbol_a: row.get(15)?,
                 symbol_b: row.get(16)?,
-                decimals_a: row
-                    .get::<_, Option<i64>>(17)?
-                    .map(|v| v.clamp(0, 18) as u8),
-                decimals_b: row
-                    .get::<_, Option<i64>>(18)?
-                    .map(|v| v.clamp(0, 18) as u8),
+                decimals_a: row.get::<_, Option<i64>>(17)?.map(|v| v.clamp(0, 18) as u8),
+                decimals_b: row.get::<_, Option<i64>>(18)?.map(|v| v.clamp(0, 18) as u8),
                 delta_a: row.get(19)?,
                 delta_b: row.get(20)?,
             })

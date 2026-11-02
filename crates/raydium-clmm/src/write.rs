@@ -165,10 +165,7 @@ fn decrease_accounts(
         AccountMeta::new_readonly(detail.token_a.mint, false),
         AccountMeta::new_readonly(detail.token_b.mint, false),
         // remaining[0]: bitmap extension (required when range is outside inline bitmap)
-        AccountMeta::new(
-            tick_array_bitmap_extension_pda(&detail.pool.address),
-            false,
-        ),
+        AccountMeta::new(tick_array_bitmap_extension_pda(&detail.pool.address), false),
     ]
 }
 
@@ -205,10 +202,7 @@ fn increase_accounts(
         AccountMeta::new_readonly(token_2022_program(), false),
         AccountMeta::new_readonly(detail.token_a.mint, false),
         AccountMeta::new_readonly(detail.token_b.mint, false),
-        AccountMeta::new(
-            tick_array_bitmap_extension_pda(&detail.pool.address),
-            false,
-        ),
+        AccountMeta::new(tick_array_bitmap_extension_pda(&detail.pool.address), false),
     ]
 }
 
@@ -519,8 +513,7 @@ pub fn plan_create_funded(
     data.push(0); // base_flag = None
 
     // Wrap is prepended by Client::assemble (wallet SOL only).
-    let mut ixs = Vec::new();
-    ixs.push(Instruction {
+    let ixs = vec![Instruction {
         program_id: program_id(),
         accounts: vec![
             AccountMeta::new(authority, true),
@@ -547,7 +540,7 @@ pub fn plan_create_funded(
             AccountMeta::new(bitmap_ext, false),
         ],
         data,
-    });
+    }];
     // silence unused metadata helper (OpenPositionV2 path)
     let _ = metadata_program();
 
@@ -623,19 +616,32 @@ fn observation_pda(pool: &Pubkey) -> Pubkey {
 }
 
 fn tick_bitmap_ext_pda(pool: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"pool_tick_array_bitmap_extension", pool.as_ref()], &program_id())
-        .0
+    Pubkey::find_program_address(
+        &[b"pool_tick_array_bitmap_extension", pool.as_ref()],
+        &program_id(),
+    )
+    .0
 }
 
 fn vault_pda(pool: &Pubkey, mint: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"pool_vault", pool.as_ref(), mint.as_ref()], &program_id()).0
+    Pubkey::find_program_address(
+        &[b"pool_vault", pool.as_ref(), mint.as_ref()],
+        &program_id(),
+    )
+    .0
 }
 
 fn price_to_sqrt_x64(human_b_per_a: f64, dec_a: u8, dec_b: u8) -> anyhow::Result<u128> {
-    anyhow::ensure!(human_b_per_a.is_finite() && human_b_per_a > 0.0, "initial price must be > 0");
+    anyhow::ensure!(
+        human_b_per_a.is_finite() && human_b_per_a > 0.0,
+        "initial price must be > 0"
+    );
     let raw = human_b_per_a * 10f64.powi(i32::from(dec_b) - i32::from(dec_a));
     let q = raw.sqrt() * ((1u128 << 64) as f64);
-    anyhow::ensure!(q.is_finite() && q > 0.0 && q < u128::MAX as f64, "sqrt_price overflow");
+    anyhow::ensure!(
+        q.is_finite() && q > 0.0 && q < u128::MAX as f64,
+        "sqrt_price overflow"
+    );
     Ok(q as u128)
 }
 
@@ -646,10 +652,7 @@ fn mint_token_program(mint: &Pubkey) -> Pubkey {
 }
 
 /// Initialize a Raydium CLMM pool (pool-only). `fee_param` = amm_config index.
-pub fn plan_create_pool(
-    authority: Pubkey,
-    params: &CreatePoolParams,
-) -> anyhow::Result<WritePlan> {
+pub fn plan_create_pool(authority: Pubkey, params: &CreatePoolParams) -> anyhow::Result<WritePlan> {
     use sol_clmm_manager::CreatePoolMode;
     anyhow::ensure!(params.mint_a != params.mint_b, "mints must differ");
     // Raydium requires mint_0 < mint_1.
@@ -664,8 +667,16 @@ pub fn plan_create_pool(
         } else {
             1.0 / params.initial_price
         },
-        if ordered { params.decimals_a } else { params.decimals_b },
-        if ordered { params.decimals_b } else { params.decimals_a },
+        if ordered {
+            params.decimals_a
+        } else {
+            params.decimals_b
+        },
+        if ordered {
+            params.decimals_b
+        } else {
+            params.decimals_a
+        },
     )?;
     let open_time = 0u64;
     let amm_config = amm_config_pda(params.fee_param);
@@ -694,18 +705,24 @@ pub fn plan_create_pool(
     };
     let mode_note = match params.mode {
         CreatePoolMode::PoolOnly => "pool only".into(),
-        _ => format!("{} · after land use n create on {pool}", params.mode.label()),
+        _ => format!(
+            "{} · after land use n create on {pool}",
+            params.mode.label()
+        ),
     };
     Ok(WritePlan {
-            op: WriteOp::CreatePool,
-            venue_label: "Raydium CLMM".into(),
-            summary: format!("create clmm pool · config {} · {mode_note}", params.fee_param),
-            instructions: vec![ix],
-            follow_up: None,
-            expected: ExpectedDeltas {
-                note: format!("new pool {pool}"),
-                ..Default::default()
-            },
-            payer: authority,
-        })
+        op: WriteOp::CreatePool,
+        venue_label: "Raydium CLMM".into(),
+        summary: format!(
+            "create clmm pool · config {} · {mode_note}",
+            params.fee_param
+        ),
+        instructions: vec![ix],
+        follow_up: None,
+        expected: ExpectedDeltas {
+            note: format!("new pool {pool}"),
+            ..Default::default()
+        },
+        payer: authority,
+    })
 }

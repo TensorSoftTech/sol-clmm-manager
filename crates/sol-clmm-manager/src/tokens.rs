@@ -165,10 +165,7 @@ pub fn resolve_mints_with_keys(
 }
 
 /// Read SPL / Token-2022 mint accounts for any entry still missing decimals.
-fn fill_decimals_from_rpc(
-    rpc: &Rpc<'_>,
-    out: &mut HashMap<Pubkey, TokenInfo>,
-) -> Result<()> {
+fn fill_decimals_from_rpc(rpc: &Rpc<'_>, out: &mut HashMap<Pubkey, TokenInfo>) -> Result<()> {
     let need: Vec<Pubkey> = out
         .iter()
         .filter(|(_, info)| info.decimals == 0)
@@ -199,10 +196,7 @@ fn fill_decimals_from_rpc(
     Ok(())
 }
 
-fn jupiter_settings(
-    store: Option<&Store>,
-    keys: Option<&PriceApiKeys>,
-) -> (Option<String>, bool) {
+fn jupiter_settings(store: Option<&Store>, keys: Option<&PriceApiKeys>) -> (Option<String>, bool) {
     if let Some(k) = keys {
         let from_session = k.jupiter.clone().filter(|s| !s.is_empty());
         if from_session.is_some() {

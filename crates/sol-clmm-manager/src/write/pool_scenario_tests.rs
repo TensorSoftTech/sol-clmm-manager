@@ -7,8 +7,7 @@ use super::liquidity::{
     swap_to_match_hint,
 };
 use crate::clmm_math::{
-    amount_a_from_b, amounts_from_liquidity, get_sqrt_price_at_tick, parse_ui_amount,
-    value_a_in_b,
+    amount_a_from_b, amounts_from_liquidity, get_sqrt_price_at_tick, parse_ui_amount, value_a_in_b,
 };
 use crate::pricing::human_price_b_per_a;
 
@@ -65,8 +64,7 @@ impl MockPool {
     fn verify_mid_price(self) {
         // Unaligned theoretical tick — allow spacing snap error (~spacing * 1 bp).
         let sp = get_sqrt_price_at_tick(self.mid_tick()).unwrap();
-        let got = human_price_b_per_a(sp, self.decimals_a, self.decimals_b)
-            .expect("human price");
+        let got = human_price_b_per_a(sp, self.decimals_a, self.decimals_b).expect("human price");
         let rel = (got - self.human_mid).abs() / self.human_mid;
         let tol = (self.tick_spacing as f64 * 0.0001 * 2.0).max(0.01);
         assert!(
@@ -217,7 +215,11 @@ fn fixtures_symmetric_range_is_both_sides() {
         let sp = p.sqrt_price();
         let (lo, hi, mid) = p.range_spacings(2);
         let (ua, ub) = deposit_ratio_planner(sp, lo, hi, 1u128 << 48);
-        assert!(ua > 0 && ub > 0, "{}: expected both legs at mid={mid}", p.name);
+        assert!(
+            ua > 0 && ub > 0,
+            "{}: expected both legs at mid={mid}",
+            p.name
+        );
     }
 }
 
@@ -332,9 +334,7 @@ fn wsol_usdc_range_above_price_single_usdc_no_swap() {
     let lo = mid - 40 * p.tick_spacing;
     let hi = mid - 10 * p.tick_spacing;
     let sp = get_sqrt_price_at_tick(mid).unwrap();
-    assert!(
-        swap_to_match_hint(0, p.raw_b("1"), sp, lo, hi, DepositShape::SingleB).is_none()
-    );
+    assert!(swap_to_match_hint(0, p.raw_b("1"), sp, lo, hi, DepositShape::SingleB).is_none());
     let plan = liquidity_delta_for_open(
         0,
         u128::from(p.raw_b("1")),
@@ -355,9 +355,7 @@ fn wsol_usdc_range_below_price_single_wsol_no_swap() {
     let lo = mid + 10 * p.tick_spacing;
     let hi = mid + 40 * p.tick_spacing;
     let sp = get_sqrt_price_at_tick(mid).unwrap();
-    assert!(
-        swap_to_match_hint(p.raw_a("0.05"), 0, sp, lo, hi, DepositShape::SingleA).is_none()
-    );
+    assert!(swap_to_match_hint(p.raw_a("0.05"), 0, sp, lo, hi, DepositShape::SingleA).is_none());
 }
 
 #[test]
@@ -395,7 +393,10 @@ fn cbbtc_usdc_single_usdc_symmetric_near_half() {
     );
     // Opposite trap vs WSOL: $1 of cbBTC ≪ $1 of USDC in raw units → legacy under-swaps.
     let legacy = legacy_raw_frac_b(sp, lo, hi);
-    assert!(legacy < 0.05, "legacy raw frac should under-weight BTC ({legacy:.3})");
+    assert!(
+        legacy < 0.05,
+        "legacy raw frac should under-weight BTC ({legacy:.3})"
+    );
     assert!(frac > legacy + 0.25);
 }
 
@@ -408,7 +409,11 @@ fn cbbtc_usdc_single_btc_symmetric_near_half() {
     let budget = p.raw_a("0.001");
     let hint = swap_to_match_hint(budget, 0, sp, lo, hi, DepositShape::SingleA).unwrap();
     let frac = swap_frac(hint.swap_in_amount, budget);
-    assert!((0.35..0.65).contains(&frac), "{} SingleA frac {frac:.3}", p.name);
+    assert!(
+        (0.35..0.65).contains(&frac),
+        "{} SingleA frac {frac:.3}",
+        p.name
+    );
 }
 
 #[test]
@@ -457,7 +462,11 @@ fn usdc_cbbtc_single_btc_near_half() {
     let budget = p.raw_b("0.001"); // ~$95 of BTC
     let hint = swap_to_match_hint(0, budget, sp, lo, hi, DepositShape::SingleB).unwrap();
     let frac = swap_frac(hint.swap_in_amount, budget);
-    assert!((0.40..0.60).contains(&frac), "{} SingleB frac {frac:.3}", p.name);
+    assert!(
+        (0.40..0.60).contains(&frac),
+        "{} SingleB frac {frac:.3}",
+        p.name
+    );
 }
 
 // ── stables + cross checks ───────────────────────────────────────────────
@@ -470,7 +479,10 @@ fn usdc_usdt_near_peg_half_and_open() {
     let budget = p.raw_a("25");
     let hint = swap_to_match_hint(budget, 0, sp, lo, hi, DepositShape::SingleA).unwrap();
     let frac = swap_frac(hint.swap_in_amount, budget);
-    assert!((0.35..0.65).contains(&frac), "stable SingleA frac {frac:.3}");
+    assert!(
+        (0.35..0.65).contains(&frac),
+        "stable SingleA frac {frac:.3}"
+    );
     // Same decimals → legacy raw ≈ value-weighted (no decimal trap).
     let legacy = {
         let (ua, ub) = amounts_from_liquidity(1u128 << 48, sp, lo, hi);
@@ -498,7 +510,10 @@ fn wsol_usdt_matches_wsol_usdc_behaviour() {
             .swap_in_amount,
         budget,
     );
-    assert!((fa - fb).abs() < 0.02, "WSOL/USDC {fa:.3} vs WSOL/USDT {fb:.3}");
+    assert!(
+        (fa - fb).abs() < 0.02,
+        "WSOL/USDC {fa:.3} vs WSOL/USDT {fb:.3}"
+    );
 }
 
 #[test]
@@ -594,15 +609,8 @@ fn matrix_all_pools_single_funded_side_post_swap_ratio() {
             DepositShape::SingleB => (0, u128::from(budget)),
             DepositShape::Dual => unreachable!(),
         };
-        let hint = swap_to_match_hint(
-            amount_a as u64,
-            amount_b as u64,
-            sp,
-            lo,
-            hi,
-            shape,
-        )
-        .unwrap_or_else(|| panic!("{} needs swap", p.name));
+        let hint = swap_to_match_hint(amount_a as u64, amount_b as u64, sp, lo, hi, shape)
+            .unwrap_or_else(|| panic!("{} needs swap", p.name));
         let (pa, pb) = post_from_hint(amount_a, amount_b, sp, hint.in_is_a, hint.swap_in_amount);
         let (ua, ub) = deposit_ratio_planner(sp, lo, hi, 1u128 << 48);
         let err = ratio_err(pa, pb, ua, ub);

@@ -45,9 +45,7 @@ impl WalletPoolBalances {
         let side = if side_a { &self.a } else { &self.b };
         if side.is_wsol {
             if use_native_sol {
-                let native = self
-                    .sol_lamports
-                    .saturating_sub(self.rent_reserve_lamports);
+                let native = self.sol_lamports.saturating_sub(self.rent_reserve_lamports);
                 native.saturating_add(side.ata_amount)
             } else {
                 side.ata_amount

@@ -9,11 +9,12 @@ use sol_clmm_manager::{
     BudgetMode, CreatePoolParams, CreatePositionParams, DepositShape, DepositSizing, DlmmStrategy,
     ExpectedDeltas, LiquidityDeltaPlan, PositionDetail, PreparedTx, SendOutcome, SolLegMode,
     SwapMode, SwapPlan, TxBudget, Venue, WriteOp, WritePlan, amounts_for_liquidity_delta,
-    clamp_balanced_amounts, compound_fee_plan, dedupe_ata_create_idempotent, dlmm_swap_to_match_hint,
-    estimate_budget_signers, fetch_swap_instructions, is_wsol, liquidity_delta_for_open,
-    liquidity_delta_from_amounts, maybe_unwrap_after, maybe_wrap_before_deposit, pool_has_wsol,
-    prepare_estimate_simulate_send, prepare_estimate_simulate_send_signers, prepare_v1_tx_signers,
-    simulate_and_send_v1, simulate_v1_tx, swap_to_match_hint, wrap_sol_ixs,
+    clamp_balanced_amounts, compound_fee_plan, dedupe_ata_create_idempotent,
+    dlmm_swap_to_match_hint, estimate_budget_signers, fetch_swap_instructions, is_wsol,
+    liquidity_delta_for_open, liquidity_delta_from_amounts, maybe_unwrap_after,
+    maybe_wrap_before_deposit, pool_has_wsol, prepare_estimate_simulate_send,
+    prepare_estimate_simulate_send_signers, prepare_v1_tx_signers, simulate_and_send_v1,
+    simulate_v1_tx, swap_to_match_hint, wrap_sol_ixs,
 };
 use solana_client::rpc_client::RpcClient;
 use solana_keypair::Keypair;
@@ -300,6 +301,7 @@ impl Client {
 
     /// Manage → deposit: size ΔL from budgets · 1-side always swap-to-match · L−3% ceil buffer.
     /// Returns `(plan, optional router tip)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn assemble_manage_deposit(
         &self,
         authority: Pubkey,
@@ -313,7 +315,10 @@ impl Client {
         settings: &AppSettings,
         strategy: Option<DlmmStrategy>,
     ) -> Result<(WritePlan, Option<u64>)> {
-        anyhow::ensure!(amount_a > 0 || amount_b > 0, "deposit needs amount A and/or B");
+        anyhow::ensure!(
+            amount_a > 0 || amount_b > 0,
+            "deposit needs amount A and/or B"
+        );
         let sqrt = detail.pool.sqrt_price;
         let lower = detail.row.tick_lower;
         let upper = detail.row.tick_upper;
@@ -491,13 +496,7 @@ impl Client {
         } else {
             0
         };
-        let wrap = maybe_wrap_before_deposit(
-            sol_leg,
-            &authority,
-            &mint_a,
-            &mint_b,
-            wrap_amt,
-        );
+        let wrap = maybe_wrap_before_deposit(sol_leg, &authority, &mint_a, &mint_b, wrap_amt);
         let wrap_n = wrap.len();
         if wrap_n > 0 {
             let mut merged = wrap;
@@ -537,12 +536,11 @@ impl Client {
             }
             Venue::MeteoraDlmm => {
                 // DLMM remove uses per-bin bps (1..=10_000), not raw L.
-                let bps = if detail.position_liquidity == 0 {
-                    10_000u16
-                } else {
-                    ((liquidity_delta.saturating_mul(10_000) / detail.position_liquidity)
-                        .min(10_000)) as u16
-                };
+                let bps = liquidity_delta
+                    .saturating_mul(10_000)
+                    .checked_div(detail.position_liquidity)
+                    .unwrap_or(10_000)
+                    .min(10_000) as u16;
                 anyhow::ensure!(bps >= 1, "withdraw bps is 0");
                 meteora_dlmm::write::plan_withdraw(authority, detail, bps, sol_leg)
             }
@@ -566,10 +564,7 @@ impl Client {
     ) -> Result<(WritePlan, Option<u64>)> {
         let fee_a = detail.fee_a;
         let fee_b = detail.fee_b;
-        anyhow::ensure!(
-            fee_a > 0 || fee_b > 0,
-            "no claimable fees to compound"
-        );
+        anyhow::ensure!(fee_a > 0 || fee_b > 0, "no claimable fees to compound");
 
         // Venue claim only — Client::plan_claim would unwrap before deposit.
         let claim = match detail.row.venue {
@@ -581,12 +576,7 @@ impl Client {
         let strategy = Some(Self::dlmm_strategy_from_settings(settings));
         // Fees are already in ATAs after claim (WSOL if SOL pool) — don't wrap native SOL.
         let (amount_a, amount_b, shape, do_swap) = if with_swap {
-            (
-                fee_a,
-                fee_b,
-                DepositShape::Dual,
-                true,
-            )
+            (fee_a, fee_b, DepositShape::Dual, true)
         } else {
             let split = compound_fee_plan(
                 fee_a,
@@ -629,11 +619,7 @@ impl Client {
             ));
         }
 
-        let mode = if with_swap {
-            "with-swap"
-        } else {
-            "no-swap"
-        };
+        let mode = if with_swap { "with-swap" } else { "no-swap" };
         let plan = WritePlan {
             op: WriteOp::Compound,
             venue_label: claim.venue_label,
@@ -679,12 +665,9 @@ impl Client {
     ) -> Result<WritePlan> {
         let liq = liquidity_delta.min(detail.position_liquidity);
         match detail.row.venue {
-            Venue::OrcaWhirlpool => orca_whirlpool::write::plan_claim_and_withdraw(
-                authority,
-                detail,
-                liq,
-                sol_leg,
-            ),
+            Venue::OrcaWhirlpool => {
+                orca_whirlpool::write::plan_claim_and_withdraw(authority, detail, liq, sol_leg)
+            }
             Venue::RaydiumClmm | Venue::MeteoraDlmm => {
                 // Venue claim (ATAs, no unwrap yet) → withdraw (ATAs + decrease + unwrap).
                 // Do not use Client::plan_claim — that would unwrap before withdraw.
@@ -696,11 +679,11 @@ impl Client {
                 if liq > 0 {
                     let withdraw = self.plan_withdraw(authority, detail, liq, sol_leg)?;
                     claim.instructions.extend(withdraw.instructions);
-                    let pct = if detail.position_liquidity > 0 {
-                        (liq.saturating_mul(100) / detail.position_liquidity).min(100)
-                    } else {
-                        0
-                    };
+                    let pct = liq
+                        .saturating_mul(100)
+                        .checked_div(detail.position_liquidity)
+                        .unwrap_or(0)
+                        .min(100);
                     claim.summary = format!("claim + withdraw {pct}% · ΔL={liq}");
                 } else {
                     claim.instructions.extend(maybe_unwrap_after(
@@ -815,10 +798,8 @@ impl Client {
 
         match params.venue {
             Venue::OrcaWhirlpool => {
-                let full = orca_whirlpool::decode::decode_whirlpool_full(
-                    params.pool,
-                    &pool_acc.data,
-                )?;
+                let full =
+                    orca_whirlpool::decode::decode_whirlpool_full(params.pool, &pool_acc.data)?;
                 let swap = if params.swap_to_match {
                     self.swap_for_create(
                         settings,
@@ -900,8 +881,7 @@ impl Client {
                 } else {
                     None
                 };
-                let plan_l =
-                    size_create_liquidity(params, header.sqrt_price, &header.mint0, &swap);
+                let plan_l = size_create_liquidity(params, header.sqrt_price, &header.mint0, &swap);
                 ensure_create_liquidity(params, &plan_l)?;
                 let post = swap
                     .as_ref()
@@ -950,9 +930,9 @@ impl Client {
                 if params.amount_a == 0 && params.amount_b == 0 {
                     bail!("DLMM create needs amount X and/or Y");
                 }
-                let strategy = params.dlmm_strategy.unwrap_or_else(|| {
-                    Self::dlmm_strategy_from_settings(settings)
-                });
+                let strategy = params
+                    .dlmm_strategy
+                    .unwrap_or_else(|| Self::dlmm_strategy_from_settings(settings));
                 let swap = if params.swap_to_match {
                     self.swap_for_create(
                         settings,
@@ -973,7 +953,10 @@ impl Client {
                 let (amount_x, amount_y) = if let Some(ref s) = swap {
                     let (ba, bb) = budgets_after_swap(params, &header.mint_x, &swap);
                     let _ = s;
-                    (ba.min(u128::from(u64::MAX)) as u64, bb.min(u128::from(u64::MAX)) as u64)
+                    (
+                        ba.min(u128::from(u64::MAX)) as u64,
+                        bb.min(u128::from(u64::MAX)) as u64,
+                    )
                 } else {
                     (params.amount_a, params.amount_b)
                 };
@@ -1031,6 +1014,7 @@ impl Client {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn swap_for_create(
         &self,
         settings: &AppSettings,
@@ -1218,6 +1202,7 @@ impl Client {
     ///
     /// When `input_is_native_sol`, `amount` is lamports wrapped into WSOL before the route.
     /// When either mint is WSOL, close the WSOL ATA at the end (native SOL out).
+    #[allow(clippy::too_many_arguments)]
     pub fn assemble_wallet_swap(
         &self,
         settings: &AppSettings,
@@ -1333,8 +1318,7 @@ fn splice_swap(
         Some(swap) => {
             let tip = swap.quote.tip_lamports;
             let insert_at = wrap_prefix.min(plan.instructions.len());
-            let mut merged =
-                Vec::with_capacity(plan.instructions.len() + swap.instructions.len());
+            let mut merged = Vec::with_capacity(plan.instructions.len() + swap.instructions.len());
             merged.extend(plan.instructions.drain(..insert_at));
             merged.extend(swap.instructions);
             merged.append(&mut plan.instructions);

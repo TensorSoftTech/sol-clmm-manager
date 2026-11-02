@@ -76,12 +76,7 @@ pub fn fetch_position_detail(
     );
     let fetch_lo = wide_lo.min(position.tick_lower);
     let fetch_hi = wide_hi.max(position.tick_upper);
-    let starts = needed_array_starts(
-        fetch_lo,
-        fetch_hi,
-        pool.tick_current_index,
-        spacing,
-    );
+    let starts = needed_array_starts(fetch_lo, fetch_hi, pool.tick_current_index, spacing);
     let addrs: Vec<Pubkey> = starts
         .iter()
         .map(|s| tick_array_pda(&row.pool, *s, &program))
@@ -354,10 +349,7 @@ pub fn fetch_position_detail(
         .collect();
 
     // Legacy OpenPosition/V2 → Tokenkeg; OpenPositionWithToken22Nft → Token-2022.
-    let position_nft_token_program = rpc
-        .get_account(&position.nft_mint)
-        .ok()
-        .map(|a| a.owner);
+    let position_nft_token_program = rpc.get_account(&position.nft_mint).ok().map(|a| a.owner);
 
     Ok(PositionDetail {
         row: row.clone(),

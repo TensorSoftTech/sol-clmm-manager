@@ -528,7 +528,7 @@ pub fn plan_create_funded(
     let mut ixs = Vec::new();
 
     // initialize_position2 args: lower_bin_id: i32, width: i32
-    let width = (params.tick_upper - params.tick_lower + 1).max(1) as i32;
+    let width = (params.tick_upper - params.tick_lower + 1).max(1);
     let mut init_data = INITIALIZE_POSITION2.to_vec();
     init_data.extend_from_slice(&params.tick_lower.to_le_bytes());
     init_data.extend_from_slice(&width.to_le_bytes());
@@ -654,7 +654,6 @@ mod tests {
         assert_eq!(&d[d.len() - 4..], &0u32.to_le_bytes()); // empty remaining slices
     }
 }
-
 
 /// Create a Meteora DLMM lb-pair (customizable permissionless).
 ///

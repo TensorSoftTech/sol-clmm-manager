@@ -230,9 +230,7 @@ pub fn parse_ui_amount(s: &str, decimals: u8) -> Result<u64, String> {
     let mut frac: u128 = if frac_s.is_empty() {
         0
     } else {
-        frac_s
-            .parse()
-            .map_err(|_| "invalid fraction".to_string())?
+        frac_s.parse().map_err(|_| "invalid fraction".to_string())?
     };
     // Right-pad fractional digits to `decimals`.
     let pad = decimals as usize - frac_s.len();
@@ -283,6 +281,7 @@ impl TickPoint {
 ///
 /// `pad_spacings` widens the X window beyond `[lower, upper]` (use
 /// [`crate::detail::CHART_FETCH_HALF_SPACINGS`] for SOL/USDC-scale context).
+#[allow(clippy::too_many_arguments)]
 pub fn build_liquidity_series(
     ticks: &BTreeMap<i32, TickPoint>,
     pool_liquidity: u128,

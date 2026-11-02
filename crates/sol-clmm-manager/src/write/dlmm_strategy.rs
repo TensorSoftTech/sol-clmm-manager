@@ -98,7 +98,8 @@ impl DlmmStrategy {
             }
             "BidAskBalanced" | "bid-ask" | "BidAsk" => Self::BidAskBalanced,
             // legacy "curve" + default
-            "CurveBalanced" | "curve" | "Curve" | _ => Self::CurveBalanced,
+            "CurveBalanced" | "curve" | "Curve" => Self::CurveBalanced,
+            _ => Self::CurveBalanced,
         }
     }
 
@@ -437,6 +438,7 @@ pub fn clamp_balanced_amounts(
 /// Swap hint so post-swap wallets match Balanced strategy ratio (replaces naive half-swap).
 ///
 /// Spot price estimate: active-bin raw price (Y/X). Jupiter quote still sets actual out.
+#[allow(clippy::too_many_arguments)]
 pub fn dlmm_swap_to_match_hint(
     amount_x: u64,
     amount_y: u64,
@@ -489,10 +491,7 @@ pub fn dlmm_swap_to_match_hint(
         };
     }
 
-    let Some((wx, wy)) = balanced_weight_totals(strategy, active_id, bin_step, min_bin, max_bin)
-    else {
-        return None;
-    };
+    let (wx, wy) = balanced_weight_totals(strategy, active_id, bin_step, min_bin, max_bin)?;
     // R = need_y / rem_x (raw). Spot P = Y/X at active bin.
     let p = bin_raw_price(active_id, bin_step);
     if !(p.is_finite() && p > 0.0) || wx <= 0.0 || wy <= 0.0 {
@@ -557,7 +556,7 @@ pub fn dlmm_swap_to_match_hint(
             let value_x = (amount_x as f64) * p;
             let value_y = amount_y as f64;
             let total = value_x + value_y;
-            // Target: value split so y_raw / x_raw = R → value_y / value_x = R/P? 
+            // Target: value split so y_raw / x_raw = R → value_y / value_x = R/P?
             // rem_y = R * rem_x, value_y = rem_y, value_x = rem_x * P → value_y/value_x = R/P
             // target_value_x = total * P / (P + R), target_value_y = total * R / (P + R)
             let target_vx = total * p / (p + r);
@@ -638,17 +637,19 @@ mod tests {
 
     #[test]
     fn one_side_never_autoswaps() {
-        assert!(dlmm_swap_to_match_hint(
-            1_000_000_000,
-            0,
-            0,
-            10,
-            -10,
-            10,
-            DlmmStrategy::CurveOneSide,
-            DepositShape::SingleA,
-        )
-        .is_none());
+        assert!(
+            dlmm_swap_to_match_hint(
+                1_000_000_000,
+                0,
+                0,
+                10,
+                -10,
+                10,
+                DlmmStrategy::CurveOneSide,
+                DepositShape::SingleA,
+            )
+            .is_none()
+        );
     }
 
     #[test]

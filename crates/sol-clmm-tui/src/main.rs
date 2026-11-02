@@ -367,17 +367,17 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
                     }
                 }
                 // Amount presets (empty field only so "0.45" typing still works).
-                KeyCode::Char('4') if on_deposit && amount_field_empty(&app) => {
+                KeyCode::Char('4') if on_deposit && amount_field_empty(app) => {
                     if let Some(w) = app.create.as_mut() {
                         w.apply_amount_pct(25);
                     }
                 }
-                KeyCode::Char('5') if on_deposit && amount_field_empty(&app) => {
+                KeyCode::Char('5') if on_deposit && amount_field_empty(app) => {
                     if let Some(w) = app.create.as_mut() {
                         w.apply_amount_pct(50);
                     }
                 }
-                KeyCode::Char('6') if on_deposit && amount_field_empty(&app) => {
+                KeyCode::Char('6') if on_deposit && amount_field_empty(app) => {
                     if let Some(w) = app.create.as_mut() {
                         w.apply_amount_pct(100);
                     }
@@ -442,11 +442,7 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
                     write_flow::ConfirmPhase::Tip => app.write_confirm_simulate(rpc),
                     write_flow::ConfirmPhase::Review => app.write_confirm_send(rpc),
                     write_flow::ConfirmPhase::Failed => {
-                        let choice = app
-                            .write_confirm
-                            .as_ref()
-                            .map(|c| c.choice)
-                            .unwrap_or(0);
+                        let choice = app.write_confirm.as_ref().map(|c| c.choice).unwrap_or(0);
                         if choice == 0 {
                             app.write_confirm_retry(rpc);
                         } else {
@@ -504,7 +500,7 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
                 app.screen = Screen::Positions;
                 app.status_line = app.positions_status_line();
             }
-        },
+        }
         Screen::Settings => match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 app.screen = Screen::Positions;
@@ -624,9 +620,10 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
                 }
                 return;
             }
-            let in_sub = app.wallet_wiz.as_ref().is_some_and(|w| {
-                w.wrap.is_some() || w.swap.is_some() || w.create_pool.is_some()
-            });
+            let in_sub = app
+                .wallet_wiz
+                .as_ref()
+                .is_some_and(|w| w.wrap.is_some() || w.swap.is_some() || w.create_pool.is_some());
             match code {
                 KeyCode::Esc => {
                     if in_sub {

@@ -75,12 +75,7 @@ pub fn fetch_position_detail(
     );
     let fetch_lo = wide_lo.min(position.tick_lower_index);
     let fetch_hi = wide_hi.max(position.tick_upper_index);
-    let starts = needed_array_starts(
-        fetch_lo,
-        fetch_hi,
-        pool.tick_current_index,
-        spacing,
-    );
+    let starts = needed_array_starts(fetch_lo, fetch_hi, pool.tick_current_index, spacing);
 
     let addrs: Vec<Pubkey> = starts
         .iter()
@@ -356,7 +351,11 @@ pub fn fetch_position_detail(
         row: row.clone(),
         pool,
         position_mint: Some(position.position_mint),
-        position_nft_token_program: Some(sol_clmm_manager::rpc::TOKEN_PROGRAM_ID.parse().expect("token")),
+        position_nft_token_program: Some(
+            sol_clmm_manager::rpc::TOKEN_PROGRAM_ID
+                .parse()
+                .expect("token"),
+        ),
         reward_vaults,
         token_a: token_a.clone(),
         token_b: token_b.clone(),

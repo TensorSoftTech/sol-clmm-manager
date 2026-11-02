@@ -165,14 +165,9 @@ impl Client {
     ) -> Result<PoolPreview> {
         let keys = &self.config.price_keys;
         match venue {
-            Venue::OrcaWhirlpool => orca_whirlpool::fetch_pool_preview(
-                rpc,
-                *pool,
-                wallet,
-                store,
-                refresh_meta,
-                keys,
-            ),
+            Venue::OrcaWhirlpool => {
+                orca_whirlpool::fetch_pool_preview(rpc, *pool, wallet, store, refresh_meta, keys)
+            }
             Venue::RaydiumClmm => {
                 raydium_clmm::fetch_pool_preview(rpc, *pool, wallet, store, refresh_meta, keys)
             }

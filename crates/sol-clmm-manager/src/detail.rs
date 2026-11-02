@@ -142,10 +142,7 @@ impl PoolPreview {
         } else {
             match (self.series.first(), self.series.last()) {
                 (Some(a), Some(b)) => (a.tick, b.tick),
-                _ => (
-                    self.pool.tick_current_index,
-                    self.pool.tick_current_index,
-                ),
+                _ => (self.pool.tick_current_index, self.pool.tick_current_index),
             }
         }
     }
@@ -307,11 +304,7 @@ pub fn chart_view_window(
     let (smin, smax) = series_extent;
     let lo = (current - half).max(smin);
     let hi = (current + half).min(smax);
-    if lo >= hi {
-        (smin, smax)
-    } else {
-        (lo, hi)
-    }
+    if lo >= hi { (smin, smax) } else { (lo, hi) }
 }
 
 /// Filter liquidity samples to a tick window; recompute peak for Y scale.
@@ -405,7 +398,11 @@ mod chart_zoom_tests {
         let mut steps_in = 0;
         while half > min {
             let next = ((half * 2) / 3).max(min);
-            let next = if next >= half { (half - 1).max(min) } else { next };
+            let next = if next >= half {
+                (half - 1).max(min)
+            } else {
+                next
+            };
             if next == half {
                 break;
             }
@@ -414,7 +411,10 @@ mod chart_zoom_tests {
             assert!(steps_in < 40, "zoom-in should converge");
         }
         assert_eq!(half, min);
-        assert!(steps_in >= 8, "wide→tight should take many steps, got {steps_in}");
+        assert!(
+            steps_in >= 8,
+            "wide→tight should take many steps, got {steps_in}"
+        );
 
         half = min;
         let mut steps_out = 0;
@@ -427,6 +427,9 @@ mod chart_zoom_tests {
             steps_out += 1;
         }
         assert_eq!(half, max);
-        assert!(steps_out >= 8, "tight→wide should take many steps, got {steps_out}");
+        assert!(
+            steps_out >= 8,
+            "tight→wide should take many steps, got {steps_out}"
+        );
     }
 }

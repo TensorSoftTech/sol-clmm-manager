@@ -17,9 +17,9 @@ mod pool_scenario_tests;
 pub mod dlmm_strategy;
 
 pub use dlmm_strategy::{
-    BinWeights, DlmmStrategy, MeteoraStrategyType, auto_fill_x, auto_fill_y, balanced_weight_totals,
-    balanced_weights, bin_raw_price, clamp_balanced_amounts, distribute_bins,
-    dlmm_swap_to_match_hint,
+    BinWeights, DlmmStrategy, MeteoraStrategyType, auto_fill_x, auto_fill_y,
+    balanced_weight_totals, balanced_weights, bin_raw_price, clamp_balanced_amounts,
+    distribute_bins, dlmm_swap_to_match_hint,
 };
 pub use liquidity::{
     CompoundFeePlan, DepositAnalysis, DepositShape, DepositSizing, LiquidityDeltaPlan,
@@ -28,9 +28,10 @@ pub use liquidity::{
     liquidity_delta_from_amounts, range_deposit_side, swap_to_match_hint,
 };
 pub use sol_wrap::{
-    SolLegMode, associated_token_program_id, create_ata_idempotent_ix, dedupe_ata_create_idempotent,
-    ensure_atas_ixs, ensure_pool_atas_ixs, is_wsol, maybe_unwrap_after, maybe_wrap_before_deposit,
-    pool_has_wsol, unwrap_sol_ix, wrap_sol_ixs, wsol_ata,
+    SolLegMode, associated_token_program_id, create_ata_idempotent_ix,
+    dedupe_ata_create_idempotent, ensure_atas_ixs, ensure_pool_atas_ixs, is_wsol,
+    maybe_unwrap_after, maybe_wrap_before_deposit, pool_has_wsol, unwrap_sol_ix, wrap_sol_ixs,
+    wsol_ata,
 };
 pub use swap::{SwapMode, SwapPlan, SwapQuote, fetch_swap_instructions};
 pub use tx::{
