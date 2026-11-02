@@ -4,6 +4,8 @@ mod app;
 mod theme;
 mod ui;
 #[cfg(feature = "write")]
+mod wallet_flow;
+#[cfg(feature = "write")]
 mod write_flow;
 
 use anyhow::{Context, Result};
@@ -94,6 +96,11 @@ fn run(
             PendingWork::Detail { refresh_meta } => {
                 app.pending = PendingWork::None;
                 app.spawn_detail_fetch(refresh_meta);
+            }
+            #[cfg(feature = "write")]
+            PendingWork::Wallet => {
+                app.pending = PendingWork::None;
+                app.spawn_wallet_fetch();
             }
         }
 
@@ -204,6 +211,12 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             KeyCode::Char('n') => {
                 if !app.is_busy() {
                     app.open_create();
+                }
+            }
+            #[cfg(feature = "write")]
+            KeyCode::Char('w') => {
+                if !app.is_busy() {
+                    app.open_wallet(rpc);
                 }
             }
             KeyCode::Char('p') => app.toggle_selected_position_link(),
@@ -484,7 +497,7 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
         | Screen::WriteConfirm
         | Screen::Manage
         | Screen::ManageDeposit
-        | Screen::ManageWrap
+        | Screen::Wallet
         | Screen::ManageCompound
         | Screen::ManageWithdraw => {
             if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
@@ -604,21 +617,62 @@ fn handle_key(app: &mut App, code: KeyCode, #[allow(unused_variables)] rpc: &Rpc
             }
         }
         #[cfg(feature = "write")]
-        Screen::ManageWrap => match code {
-            KeyCode::Esc => app.manage_wrap_back(),
-            KeyCode::Enter => app.manage_wrap_submit(),
-            KeyCode::Backspace => {
-                if let Some(w) = app.manage_wrap.as_mut() {
-                    w.input_backspace();
+        Screen::Wallet => {
+            if app.wallet_loading || matches!(app.pending, PendingWork::Wallet) {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    app.cancel_wallet();
                 }
+                return;
             }
-            KeyCode::Char(c) => {
-                if let Some(w) = app.manage_wrap.as_mut() {
-                    w.input_char(c);
+            let in_sub = app.wallet_wiz.as_ref().is_some_and(|w| {
+                w.wrap.is_some() || w.swap.is_some() || w.create_pool.is_some()
+            });
+            match code {
+                KeyCode::Esc => {
+                    if in_sub {
+                        if let Some(w) = app.wallet_wiz.as_mut() {
+                            w.wrap = None;
+                            w.swap = None;
+                            w.create_pool = None;
+                            w.error = None;
+                            app.status_line = w.status_hint();
+                        }
+                    } else {
+                        app.cancel_wallet();
+                    }
                 }
+                KeyCode::Enter => app.wallet_enter(rpc),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(w) = app.wallet_wiz.as_mut() {
+                        w.down();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(w) = app.wallet_wiz.as_mut() {
+                        w.up();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                KeyCode::Tab => {
+                    if let Some(w) = app.wallet_wiz.as_mut() {
+                        w.tab();
+                        app.status_line = w.status_hint();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(w) = app.wallet_wiz.as_mut() {
+                        w.input_backspace();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(w) = app.wallet_wiz.as_mut() {
+                        w.input_char(c);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        },
+        }
         #[cfg(feature = "write")]
         Screen::ManageCompound => {
             use crate::write_flow::ManageCompoundStep;

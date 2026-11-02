@@ -356,6 +356,7 @@ pub fn fetch_position_detail(
         row: row.clone(),
         pool,
         position_mint: Some(position.position_mint),
+        position_nft_token_program: Some(sol_clmm_manager::rpc::TOKEN_PROGRAM_ID.parse().expect("token")),
         reward_vaults,
         token_a: token_a.clone(),
         token_b: token_b.clone(),

@@ -12,13 +12,15 @@
 
 # Writes: solid POC — not production size
 
-**`--features write` is a working proof of concept.** Reads (list / detail / chart / ≈ USD) are solid. Claim / deposit / withdraw / close / create, native SOL wrap/unwrap, and tx v1 sim→send are in good shape for **dust / burner** testing across Orca · Raydium · Meteora.
+**`--features write` is a working proof of concept.** Reads (list / detail / chart / ≈ USD) are solid. Claim / deposit / withdraw / close / create position, wallet wrap·unwrap·swap, and tx v1 sim→send are in shape for **dust / burner** testing — **coverage is still thin**.
 
 | Area | Reality today |
 |------|----------------|
+| **Live smoke so far** | **Open position** briefly exercised on **Raydium + Meteora · SOL/USDC only**. Other pools, Orca open, create-pool, wallet flows, compound, close, etc. still need more dust tests. |
 | **Autoswap (Jupiter / Titan)** | **Does not work as intended yet** (P0 — see TODO). Sizing / route / slippage drift. Prefer **no-swap** until a correct path (likely helper program) lands. |
 | **Rebalance / move** | Not built yet (P1 · final boss): close OOR → swap → open in range. |
-| **Everything else write-related** | Good as a POC — still use a **burner wallet**; always read sim logs before Enter send. |
+| **Create pool** | Orca / Raydium planners wired · Meteora stub · **untested live** · +deposit/+swap seed via `n` after land. |
+| **Everything else write-related** | POC quality — **burner wallet**; always read sim logs before Enter send. |
 
 Not audited. No warranty. Esc / cancel anytime. When in doubt: **read-only build, no `--features write`.**
 
@@ -28,9 +30,9 @@ Terminal + library workspace for **Solana concentrated liquidity**:
 
 | Venue | Crate | Status |
 |-------|--------|--------|
-| **Orca Whirlpools** | `orca-whirlpool` | list / detail / chart / ≈ USD · writes POC |
-| **Raydium CLMM** | `raydium-clmm` | list / detail / chart / ≈ USD · writes POC |
-| **Meteora DLMM** | `meteora-dlmm` | list / detail / chart / ≈ USD · writes POC |
+| **Orca Whirlpools** | `orca-whirlpool` | list / detail / chart / ≈ USD · writes POC (open smoke thin) |
+| **Raydium CLMM** | `raydium-clmm` | list / detail / chart / ≈ USD · writes POC · **open SOL/USDC smoke** |
+| **Meteora DLMM** | `meteora-dlmm` | list / detail / chart / ≈ USD · writes POC · **open SOL/USDC smoke** |
 
 Built with Rust + [ratatui](https://ratatui.rs/). Shared domain lives in `sol-clmm-manager`; multi-venue reads go through `sol-clmm-client`; the interactive binary is `sol-clmm-tui`. Agent skills: [`skills/`](skills/).
 
@@ -59,7 +61,7 @@ sol-clmm-manager/          # this repo (Cargo workspace)
 │   ├── raydium-clmm/      # Raydium CLMM protocol lib
 │   ├── meteora-dlmm/      # Meteora DLMM protocol lib
 │   └── sol-clmm-tui/      # TUI binary (ratatui)
-├── skills/                # Cursor agent skills (sol-clmm · read · pricing)
+├── skills/                # Cursor agent skills (sol-clmm · read · pricing · write)
 ├── docs/images/           # README screenshots
 ├── Cargo.toml
 └── README.md
@@ -85,11 +87,11 @@ Protocol crates do **not** depend on the TUI. Agents should use **`sol-clmm-clie
 | `orca-whirlpool` | lib | Whirlpool decode, list, detail, amounts-from-L, chart series · rows tagged `Venue::OrcaWhirlpool` |
 | `raydium-clmm` | lib | CLMM list/detail/amounts/chart/≈USD · NFT → PDA · `Venue::RaydiumClmm` |
 | `meteora-dlmm` | lib | DLMM list/detail/amounts/chart/≈USD · PositionV2 GPA · `Venue::MeteoraDlmm` |
-| `sol-clmm-tui` | bin | Interactive TUI — wizard, list, detail, settings, **`?` help**, refresh animation (calls `sol-clmm-client`) |
+| `sol-clmm-tui` | bin | Interactive TUI — wizard, list, detail, **`w` wallet**, manage/create (write), settings, **`?` help** (calls `sol-clmm-client`) |
 
 ## Status
 
-Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / dust). Next: **correct swaps (P0)** · **rebalance (P1)** · **history / accounting (P2)**.
+Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / dust) — **smoke so far: open on Raydium + Meteora SOL/USDC**; broaden to other pools / create / wallet / manage before trusting further. Next: **correct swaps (P0)** · **rebalance (P1)** · richer **history notes (P2)**.
 
 ## Progress
 
@@ -106,6 +108,17 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
 - [x] Venue filter (`v`) across all three venues
 - [x] MIT + unofficial / risk notes
 - [x] **`sol-clmm-client`** multi-venue Client + `skills/` agent docs
+- [x] **Wallet screen (`w`)** — async balance load bar · wrap / unwrap / Jupiter·Titan swap · create-pool wizard
+- [x] Write **history (`y`)** — sig · op · pool · token Δ (wallet swap from/to) · SOL spend fallback
+- [x] Dust smoke: **create/open position** Raydium + Meteora **SOL/USDC** (momentary)
+
+### Needs more live testing
+
+- [ ] Open / deposit / withdraw / close on **non–SOL/USDC** pools (stables, meme, Token-2022)
+- [ ] Orca open + manage paths (dust)
+- [ ] Wallet swap / wrap / unwrap end-to-end + history Δ check
+- [ ] **Create pool** Orca / Raydium (pool-only) · Meteora still stub
+- [ ] Create position + seed deposit after new pool · compound · claim+withdraw
 
 ### TODO — priority
 
@@ -116,10 +129,10 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
      2. **With-swap** — Dual + value-weighted swap-to-match on full fee budgets.
    - **Rewards ≠ pool mints** — when claimed rewards are a third token (not A/B), offer **swap reward → A and/or B** then include in the compound deposit (opt-in; skip / leave in wallet otherwise).
 2. **Rebalance / move position (P1 · final boss)** — when out of range (or user wants a new band): claim → withdraw/close → (swap if needed) → open a new in-range (or target) position in one managed flow. Same helper contract may own the atomic path. TUI: manage → rebalance wizard.
-3. **History / accounting (P2)** — minimal durable ledger (sig is enough to re-fetch chain data anytime):
+3. **History / accounting (P2)** — ledger is usable; still thin:
    - **TUI** — `y` on positions = all writes; `y` on detail = that position only. Columns: when · op · pool · Δ · note.
    - **Stored** — sig · op · venue · position · pool · pool_label/symbols · SOL Δ · token ATA Δ · summary.
-   - **Still thin** — structured plan inputs (exact amounts/shape) for richer notes.
+   - **Still thin** — structured plan inputs (exact amounts/shape) for richer notes; backfill older wallet-swap rows that only show fee SOL.
 
 ### TODO — later
 
@@ -127,7 +140,8 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
 - [x] Claim-sim fees (fee-growth) + rewards · human amounts + USD
 - [x] **Pool snapshots in SQLite** → period fee / volume deltas on detail refresh
 - [x] Write scaffold (`--features write`) · **tx v1** · always simulate · auto CU/tip
-- [x] **SOL as native** (not WSOL UX) · manage wrap/unwrap · Jupiter `wrapAndUnwrapSol=false` · DLMM strategies · close+claim · create
+- [x] **SOL as native** (not WSOL UX) · wallet wrap/unwrap · Jupiter `wrapAndUnwrapSol=false` · DLMM strategies · close+claim · create
+- [x] Wallet tools + create-pool assemble (Meteora create stub)
 - [ ] **Agent mode** binary on the same libs (read default · write opt-in)
 - [ ] Bundled positions · sharper chart markers
 
@@ -138,7 +152,7 @@ Separate binary on **`sol-clmm-manager` + protocol crates** (not a fork of decod
 | Mode | Default? | Capabilities |
 |------|----------|--------------|
 | **Read** | yes | list / detail / TVL / ≈ USD / quotes / meters |
-| **Write** | off — `cargo run -p sol-clmm-tui --features write` | claim / deposit / withdraw / wrap·unwrap SOL / compound · **tx v1** · simulate always · consent prompt |
+| **Write** | off — `cargo run -p sol-clmm-tui --features write` | claim / deposit / withdraw / compound / create · **wallet** wrap·unwrap·swap·create-pool · **tx v1** · simulate always · consent prompt |
 
 **Key material:** SQLite may store the **keypair file path** + pubkey. **Never** key bytes / seed. Keys are read from disk only at sign time.
 
@@ -152,14 +166,15 @@ Pools still use the WSOL mint on-chain (`So111…112`). The TUI treats that leg 
 | **Start** of claim / withdraw / close | `CreateIdempotent` pool ATAs (WSOL may be gone after a prior unwrap) |
 | **Autoswap** | Jupiter/Titan **`wrapAndUnwrapSol=false`** — we wrap/unwrap ourselves |
 | **End** of deposit / create / claim / withdraw / close | `unwrap_sol_ix` — close WSOL ATA → native SOL |
-| **Manage → wrap SOL / unwrap SOL** | Same ixs, standalone |
+| **Wallet (`w`) → wrap / unwrap** | Same ixs, standalone (not under Manage) |
 
 Balances show **SOL** (native + any remaining wrapped). Claiming or withdrawing a SOL leg always unwraps.
 
 **Wallet balance refresh (SOL pairs):** native SOL and the WSOL ATA change on every write. The TUI reloads wallet balances:
 
 - on every **position detail** load / `r` refresh
-- at the **start** of manage deposit / wrap (before mingling)
+- at the **start** of manage deposit (before mingling)
+- when opening **Wallet (`w`)** (async load bar)
 - **immediately after every landed tx** (fees + wrap/unwrap always move SOL)
 
 ### Pool report via on-chain snapshots (SQLite deltas)
@@ -268,17 +283,19 @@ Press **`?`** or **`h`** in the TUI for the full in-app help (scroll with ↑↓
 | Screen | Keys |
 |--------|------|
 | **Help** | `?` / `h` open · ↑↓ scroll · Esc / `?` / `h` back |
-| **Positions** | ↑↓ · Enter detail · **`v` venue filter** · `r` refresh (snapshots) · `s` settings · `p` Solscan · `q` |
-| **Detail** | `r` refresh · `p` Solscan · **`+/-` zoom** · **`0` fit range** · **`m` manage** (writes) · Esc |
+| **Positions** | ↑↓ · Enter detail · **`v` venue filter** · `r` refresh (snapshots) · `s` settings · **`n` create** · **`w` wallet** (writes) · `y` history · `p` Solscan · `q` |
+| **Detail** | `r` refresh · `p` Solscan · **`+/-` zoom** · **`0` fit range** · **`m` manage** (writes) · `y` history · Esc |
+| **Wallet** (`w`, writes) | load bar → wrap / unwrap / swap / create pool · Esc back |
 | **Create** (`n`, writes) | venue → pool → **range chart** → side/amount → review |
 | **Create · range** | ←→ nudge · Tab focus · `H`/`L` shift · `1`/`2`/`3` ±5/10/25% · **`+/-` zoom** · **`0` fit** |
-| **Manage** (`--features write`) | deposit · **wrap SOL** · **unwrap SOL** · close / claim / withdraw |
+| **Manage** (`--features write`) | deposit · compound · close / claim / withdraw (wrap·unwrap live under **`w`**) |
+| **History** (`y`) | when · op · pool · Δ · note · Esc |
 | **Write confirm** | ↑↓ tip · Enter sim · Enter send · `[` back · logs scroll |
 | **Settings** | USD mode · API keys · privacy · RPC / wallet |
 
 ![Write confirm — claim fees sim OK + program logs (tx v1)](docs/images/write-confirm-sim.jpg)
 
-> Solid **POC** UI — still use a burner wallet. **Autoswap** is the known gap (prefer no-swap).
+> Solid **POC** UI — burner / dust only. Smoke so far: **open Raydium + Meteora SOL/USDC**. Prefer **no-swap** until autoswap is fixed.
 
 List merges Orca + Raydium + Meteora; **`v`** filters. Fees on the list are **claim-sim** (not stale owed). Volume needs **≥2** refreshes so SQLite can sum the snapshot chain.
 
@@ -290,7 +307,7 @@ List merges Orca + Raydium + Meteora; **`v`** filters. Fees on the list are **cl
 
 ## Library reuse (agent path)
 
-Prefer **`sol-clmm-client`** so you do not re-copy multi-venue wiring. Cursor skills: [`skills/sol-clmm`](skills/sol-clmm/SKILL.md), [`skills/sol-clmm-read`](skills/sol-clmm-read/SKILL.md), [`skills/sol-clmm-pricing`](skills/sol-clmm-pricing/SKILL.md).
+Prefer **`sol-clmm-client`** so you do not re-copy multi-venue wiring. Cursor skills: [`skills/sol-clmm`](skills/sol-clmm/SKILL.md), [`skills/sol-clmm-read`](skills/sol-clmm-read/SKILL.md), [`skills/sol-clmm-pricing`](skills/sol-clmm-pricing/SKILL.md), [`skills/sol-clmm-write`](skills/sol-clmm-write/SKILL.md).
 
 ```rust
 use sol_clmm_client::Client;

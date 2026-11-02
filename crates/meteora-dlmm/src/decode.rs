@@ -302,7 +302,10 @@ pub fn bin_array_pda(lb_pair: &Pubkey, index: i64, program: &Pubkey) -> Pubkey {
     .0
 }
 
-/// Claim-sim fees: pending + (bin_fee_per_token − complete) * share >> 64.
+/// Claim-sim fees — Meteora SDK: `mulShr(share >> 64, Δfee_per_token, 64)`.
+///
+/// Shares are Q64.64; fee growth is also Q64.64. Using the full share (as in
+/// Uniswap-V3 `L * Δfg >> 64`) overstates fees by ~2^64 and blows up list USD.
 pub fn claim_fees_from_bins(position: &PositionV2, bins: &BTreeMap<i32, BinData>) -> (u64, u64) {
     let mut fx: u128 = 0;
     let mut fy: u128 = 0;
@@ -315,20 +318,23 @@ pub fn claim_fees_from_bins(position: &PositionV2, bins: &BTreeMap<i32, BinData>
         };
         fx = fx.saturating_add(slot.fee_x_pending as u128);
         fy = fy.saturating_add(slot.fee_y_pending as u128);
-        if share == 0 {
+        // Integer share only (SDK `posShares[idx].shrn(SCALE_OFFSET)`).
+        let share_i = share >> 64;
+        if share_i == 0 {
             continue;
         }
         let Some(bin) = bins.get(&bin_id) else {
             continue;
         };
+        // Checkpoint ahead of bin → no growth yet (do not wrap).
         let dx = bin
             .fee_amount_x_per_token_stored
-            .wrapping_sub(slot.fee_x_per_token_complete);
+            .saturating_sub(slot.fee_x_per_token_complete);
         let dy = bin
             .fee_amount_y_per_token_stored
-            .wrapping_sub(slot.fee_y_per_token_complete);
-        fx = fx.saturating_add(sol_clmm_manager::fees::mul_shift_right_64(dx, share));
-        fy = fy.saturating_add(sol_clmm_manager::fees::mul_shift_right_64(dy, share));
+            .saturating_sub(slot.fee_y_per_token_complete);
+        fx = fx.saturating_add(sol_clmm_manager::fees::mul_shift_right_64(dx, share_i));
+        fy = fy.saturating_add(sol_clmm_manager::fees::mul_shift_right_64(dy, share_i));
     }
     (
         fx.min(u64::MAX as u128) as u64,
@@ -367,19 +373,54 @@ pub fn amounts_from_shares(position: &PositionV2, bins: &BTreeMap<i32, BinData>)
     (ax, ay)
 }
 
+/// `(a * b) / d` — integer only. f64 loses Q64.64 share precision.
 fn mul_div_u128(a: u128, b: u128, d: u128) -> u128 {
-    if d == 0 {
+    if d == 0 || a == 0 || b == 0 {
         return 0;
     }
-    // Prefer f64 for large values when product may overflow.
-    let prod = (a as f64) * (b as f64) / (d as f64);
-    if !prod.is_finite() || prod <= 0.0 {
-        0
-    } else if prod >= u128::MAX as f64 {
-        u128::MAX
-    } else {
-        prod.round() as u128
+    if let Some(prod) = a.checked_mul(b) {
+        return prod / d;
     }
+    // a*b does not fit in u128 — divide 256-bit product by d.
+    let (hi, lo) = full_mul_u128(a, b);
+    div_u256_by_u128(hi, lo, d)
+}
+
+fn full_mul_u128(a: u128, b: u128) -> (u128, u128) {
+    const MASK: u128 = (1u128 << 64) - 1;
+    let (a_hi, a_lo) = (a >> 64, a & MASK);
+    let (b_hi, b_lo) = (b >> 64, b & MASK);
+    let ll = a_lo * b_lo;
+    let lh = a_lo * b_hi;
+    let hl = a_hi * b_lo;
+    let hh = a_hi * b_hi;
+    let mid = (ll >> 64) + (lh & MASK) + (hl & MASK);
+    let lo = (ll & MASK) | (mid << 64);
+    let hi = hh + (lh >> 64) + (hl >> 64) + (mid >> 64);
+    (hi, lo)
+}
+
+fn div_u256_by_u128(mut hi: u128, mut lo: u128, d: u128) -> u128 {
+    if hi == 0 {
+        return lo / d;
+    }
+    // Shift-subtract 256÷128 → 128-bit quotient (saturate if ≥ 2^128).
+    let mut q = 0u128;
+    for _ in 0..128 {
+        let carry = (hi & (1u128 << 127)) != 0;
+        hi = (hi << 1) | (lo >> 127);
+        lo <<= 1;
+        q <<= 1;
+        if carry || hi >= d {
+            hi -= d;
+            q |= 1;
+        }
+    }
+    // If remainder of high bits still ≥ d after 128 steps, quotient overflowed.
+    if hi >= d {
+        return u128::MAX;
+    }
+    q
 }
 
 /// `pad_bins` widens the X window beyond the position (use `CHART_FETCH_HALF_SPACINGS`).
@@ -489,5 +530,68 @@ mod tests {
         assert_eq!(bin_id_to_bin_array_index(0), 0);
         assert_eq!(bin_id_to_bin_array_index(70), 1);
         assert_eq!(bin_id_to_bin_array_index(-1), -1);
+    }
+
+    #[test]
+    fn mul_div_preserves_q64_shares() {
+        // Typical Q64.64 share against bin supply — f64 would lose low bits.
+        let share = 1u128 << 64;
+        let amount = 1_000_000u128;
+        let supply = 2u128 << 64;
+        assert_eq!(mul_div_u128(share, amount, supply), 500_000);
+
+        // Overflow path: share * amount does not fit u128.
+        let big_share = 1u128 << 100;
+        let big_amt = 1u128 << 40;
+        let big_sup = 1u128 << 110;
+        assert_eq!(mul_div_u128(big_share, big_amt, big_sup), 1u128 << 30);
+
+        assert_eq!(
+            mul_div_u128(u128::MAX / 2, 3, 2),
+            (u128::MAX / 2) + (u128::MAX / 2) / 2
+        );
+    }
+
+    #[test]
+    fn claim_fees_use_share_integer_part() {
+        // share = 5 << 64 → share_i = 5; Δfee = 3 << 64 → fee = 15
+        let mut bins = BTreeMap::new();
+        bins.insert(
+            10,
+            BinData {
+                id: 10,
+                amount_x: 0,
+                amount_y: 0,
+                liquidity_supply: 1,
+                fee_amount_x_per_token_stored: 3u128 << 64,
+                fee_amount_y_per_token_stored: 0,
+            },
+        );
+        let mut shares = vec![0u128; 70];
+        shares[0] = 5u128 << 64;
+        let fee_infos = vec![
+            FeeInfoSlot {
+                fee_x_per_token_complete: 0,
+                fee_y_per_token_complete: 0,
+                fee_x_pending: 0,
+                fee_y_pending: 0,
+            };
+            70
+        ];
+        let pos = PositionV2 {
+            lb_pair: Pubkey::default(),
+            lower_bin: 10,
+            upper_bin: 10,
+            liquidity_shares: shares,
+            liquidity: 5u128 << 64,
+            reward_infos: vec![UserRewardSlot::default(); 70],
+            fee_infos,
+            fee_x_pending: 0,
+            fee_y_pending: 0,
+            reward_pending: [0; 2],
+        };
+        let (fx, fy) = claim_fees_from_bins(&pos, &bins);
+        assert_eq!(fx, 15);
+        assert_eq!(fy, 0);
     }
 }

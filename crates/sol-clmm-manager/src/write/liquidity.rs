@@ -200,7 +200,8 @@ pub fn analyze_deposit(
     };
 
     let note = if sqrt_price == 0 {
-        "DLMM · ratio hint unavailable (no √P)".into()
+        // DLMM (and any venue without √P) — no CLMM ratio / ΔL preview.
+        "no √P · venue sizes bins · ratio preview N/A".into()
     } else if swap_needed {
         if let Some(h) = swap {
             let dir = if h.in_is_a { "A→B" } else { "B→A" };

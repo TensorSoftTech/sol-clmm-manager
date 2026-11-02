@@ -1,10 +1,15 @@
-//! Wallet SPL / native SOL balances for deposit caps.
+//! Wallet SPL / native SOL balances for deposit caps and wallet management.
 
 use crate::clmm_math::read_token_account_amount;
 use crate::rpc::{Rpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use crate::stables::wsol_mint;
+use crate::store::Store;
+use crate::tokens::{TokenInfo, resolve_mints};
 use anyhow::{Context, Result};
+use solana_account_decoder_client_types::UiAccountData;
+use solana_client::rpc_request::TokenAccountsFilter;
 use solana_pubkey::Pubkey;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -163,4 +168,87 @@ pub fn fetch_wallet_pool_balances(
         sol_lamports,
         rent_reserve_lamports: SOL_FEE_RESERVE_LAMPORTS,
     })
+}
+
+/// One wallet SPL balance row (human label filled by caller / resolve).
+#[derive(Debug, Clone)]
+pub struct WalletTokenBalance {
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub symbol: String,
+    pub decimals: u8,
+    pub is_wsol: bool,
+}
+
+/// Native SOL + every non-zero SPL / Token-2022 ATA (amount > 0).
+pub fn fetch_wallet_token_balances(
+    rpc: &Rpc<'_>,
+    owner: &Pubkey,
+    store: Option<&Store>,
+) -> Result<(u64, Vec<WalletTokenBalance>)> {
+    let sol_lamports = rpc.get_balance(owner).context("get SOL balance")?;
+    let mut by_mint: HashMap<Pubkey, u64> = HashMap::new();
+    for program_str in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
+        let program = Pubkey::from_str(program_str).context("token program")?;
+        let accounts = rpc
+            .get_token_accounts_by_owner(owner, TokenAccountsFilter::ProgramId(program))
+            .with_context(|| format!("token accounts ({program_str})"))?;
+        for keyed in accounts {
+            if let Some((mint, amount)) = parse_token_amount_mint(&keyed.account.data)
+                && amount > 0
+            {
+                *by_mint.entry(mint).or_default() = by_mint
+                    .get(&mint)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(amount);
+            }
+        }
+    }
+
+    let mints: Vec<Pubkey> = by_mint.keys().copied().collect();
+    let resolved = resolve_mints(rpc, &mints, store, false).unwrap_or_default();
+    let wsol = wsol_mint();
+    let mut rows: Vec<WalletTokenBalance> = by_mint
+        .into_iter()
+        .map(|(mint, amount)| {
+            let info = resolved.get(&mint).cloned().unwrap_or_else(|| TokenInfo {
+                mint,
+                symbol: mint.to_string().chars().take(4).collect(),
+                decimals: 0,
+            });
+            WalletTokenBalance {
+                mint,
+                amount,
+                symbol: if mint == wsol {
+                    "WSOL".into()
+                } else {
+                    info.symbol
+                },
+                decimals: if mint == wsol { 9 } else { info.decimals },
+                is_wsol: mint == wsol,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.amount
+            .cmp(&a.amount)
+            .then(a.symbol.cmp(&b.symbol))
+            .then(a.mint.to_string().cmp(&b.mint.to_string()))
+    });
+    Ok((sol_lamports, rows))
+}
+
+fn parse_token_amount_mint(data: &UiAccountData) -> Option<(Pubkey, u64)> {
+    let UiAccountData::Json(parsed) = data else {
+        return None;
+    };
+    let info = parsed.parsed.get("info")?;
+    let amount_s = info
+        .pointer("/tokenAmount/amount")
+        .and_then(|v| v.as_str())
+        .or_else(|| info.get("tokenAmount")?.get("amount")?.as_str())?;
+    let amount: u64 = amount_s.parse().ok()?;
+    let mint = Pubkey::from_str(info.get("mint")?.as_str()?).ok()?;
+    Some((mint, amount))
 }

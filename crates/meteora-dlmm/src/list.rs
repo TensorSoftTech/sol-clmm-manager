@@ -3,8 +3,9 @@
 //! Fees use claim-sim (pending + Δbin fee_per_token), not pending alone.
 
 use super::decode::{
-    OWNER_OFFSET, POSITION_V2_DISC, POSITION_V2_LEN, bin_array_pda, bin_id_to_bin_array_index,
-    claim_fees_from_bins, decode_bin_array, decode_lb_pair_header, decode_position_v2,
+    OWNER_OFFSET, POSITION_V2_DISC, POSITION_V2_LEN, amounts_from_shares, bin_array_pda,
+    bin_id_to_bin_array_index, claim_fees_from_bins, decode_bin_array, decode_lb_pair_header,
+    decode_position_v2,
 };
 use super::dlmm_program_id;
 use anyhow::Result;
@@ -196,6 +197,11 @@ pub fn list_positions(
             } else {
                 claim_fees_from_bins(&pos, bins)
             };
+            let (amount_a, amount_b) = if bins.is_empty() {
+                (0, 0)
+            } else {
+                amounts_from_shares(&pos, bins)
+            };
 
             let mut row = PositionRow::new(
                 Venue::MeteoraDlmm,
@@ -214,6 +220,8 @@ pub fn list_positions(
             row.decimals_b = dec_b;
             row.symbol_a = sym_a;
             row.symbol_b = sym_b;
+            row.amount_a = amount_a;
+            row.amount_b = amount_b;
             row.fee_a = fee_a;
             row.fee_b = fee_b;
             row.tick_current = active;

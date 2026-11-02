@@ -6,20 +6,28 @@
 use anyhow::{Context, Result, bail};
 use sol_clmm_manager::store::AppSettings;
 use sol_clmm_manager::{
-    BudgetMode, CreatePositionParams, DepositShape, DepositSizing, DlmmStrategy, ExpectedDeltas,
-    LiquidityDeltaPlan, PositionDetail, PreparedTx, SendOutcome, SolLegMode, SwapMode, SwapPlan,
-    TxBudget, Venue, WriteOp, WritePlan, amounts_for_liquidity_delta, compound_fee_plan,
-    dedupe_ata_create_idempotent, estimate_budget_signers, fetch_swap_instructions, is_wsol,
-    liquidity_delta_for_open, liquidity_delta_from_amounts, maybe_unwrap_after,
-    maybe_wrap_before_deposit, pool_has_wsol, prepare_estimate_simulate_send,
-    prepare_estimate_simulate_send_signers, prepare_v1_tx_signers, simulate_and_send_v1,
-    simulate_v1_tx, swap_to_match_hint,
+    BudgetMode, CreatePoolParams, CreatePositionParams, DepositShape, DepositSizing, DlmmStrategy,
+    ExpectedDeltas, LiquidityDeltaPlan, PositionDetail, PreparedTx, SendOutcome, SolLegMode,
+    SwapMode, SwapPlan, TxBudget, Venue, WriteOp, WritePlan, amounts_for_liquidity_delta,
+    clamp_balanced_amounts, compound_fee_plan, dedupe_ata_create_idempotent, dlmm_swap_to_match_hint,
+    estimate_budget_signers, fetch_swap_instructions, is_wsol, liquidity_delta_for_open,
+    liquidity_delta_from_amounts, maybe_unwrap_after, maybe_wrap_before_deposit, pool_has_wsol,
+    prepare_estimate_simulate_send, prepare_estimate_simulate_send_signers, prepare_v1_tx_signers,
+    simulate_and_send_v1, simulate_v1_tx, swap_to_match_hint, wrap_sol_ixs,
 };
 use solana_client::rpc_client::RpcClient;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 
 use crate::Client;
+
+/// DLMM create autoswap context (strategy-weight ratio instead of CLMM √P).
+struct DlmmCreateSwapCtx {
+    active_id: i32,
+    bin_step: u16,
+    strategy: DlmmStrategy,
+}
 
 /// Native SOL to wrap from the wallet before deposit — 0 when the WSOL side is unfunded
 /// (e.g. single-side USDC on SOL/USDC). Swap output arrives as WSOL via the router
@@ -41,7 +49,8 @@ fn wrap_lamports_from_wallet(
     }
 }
 
-/// Close WSOL ATA → native SOL after deposit/create when managing SOL as native.
+/// Close WSOL ATA → native SOL after create when `sol_leg` is NativeSol.
+/// Shared by Orca / Raydium / Meteora — same suffix for all venues.
 fn finish_native_sol(
     mut plan: WritePlan,
     authority: Pubkey,
@@ -238,13 +247,7 @@ impl Client {
     }
 
     pub fn dlmm_strategy_from_settings(settings: &AppSettings) -> DlmmStrategy {
-        match settings.dlmm_strategy.as_deref() {
-            Some("bid-ask") => DlmmStrategy::BidAsk,
-            Some("spot-tight") => DlmmStrategy::SpotConcentrated,
-            Some("spot-spread") => DlmmStrategy::SpotSpread,
-            Some("spot-wide") => DlmmStrategy::SpotWide,
-            _ => DlmmStrategy::Curve,
-        }
+        DlmmStrategy::from_setting(settings.dlmm_strategy.as_deref().unwrap_or("CurveBalanced"))
     }
 
     /// Plan claim fees + rewards for the position’s venue.
@@ -327,8 +330,26 @@ impl Client {
             let hint = if sqrt > 0 {
                 swap_to_match_hint(amount_a, amount_b, sqrt, lower, upper, shape_eff)
             } else {
-                // DLMM: no √P ratio — never invent a half-budget swap for out-of-range.
-                None
+                // DLMM Balanced: strategy-weight autofill (not half-swap).
+                let strat = strategy.unwrap_or_default();
+                let bin_step = match detail.pool.index_space {
+                    sol_clmm_manager::IndexSpace::Bin { bin_step } => bin_step,
+                    _ => 0,
+                };
+                if bin_step == 0 {
+                    None
+                } else {
+                    dlmm_swap_to_match_hint(
+                        amount_a,
+                        amount_b,
+                        detail.pool.tick_current_index,
+                        bin_step,
+                        lower,
+                        upper,
+                        strat,
+                        shape_eff,
+                    )
+                }
             };
             match hint {
                 Some(h) if h.swap_in_amount > 0 => {
@@ -413,14 +434,31 @@ impl Client {
         // Venue deposit without wrap/unwrap — we own SOL wrap (prefix) + unwrap (suffix).
         // Jupiter wrapAndUnwrapSol=false; wrap before swap, unwrap after deposit.
         let mut plan = match detail.row.venue {
-            Venue::MeteoraDlmm => meteora_dlmm::write::plan_deposit_with_strategy(
-                authority,
-                detail,
-                strategy.unwrap_or_default(),
-                max_a,
-                max_b,
-                SolLegMode::Wsol,
-            )?,
+            Venue::MeteoraDlmm => {
+                let strat = strategy.unwrap_or_default();
+                let (dep_a, dep_b) = match detail.pool.index_space {
+                    sol_clmm_manager::IndexSpace::Bin { bin_step } if strat.is_balanced() => {
+                        clamp_balanced_amounts(
+                            max_a,
+                            max_b,
+                            strat,
+                            detail.pool.tick_current_index,
+                            bin_step,
+                            lower,
+                            upper,
+                        )
+                    }
+                    _ => (max_a, max_b),
+                };
+                meteora_dlmm::write::plan_deposit_with_strategy(
+                    authority,
+                    detail,
+                    strat,
+                    dep_a,
+                    dep_b,
+                    SolLegMode::Wsol,
+                )?
+            }
             Venue::OrcaWhirlpool => orca_whirlpool::write::plan_deposit(
                 authority,
                 detail,
@@ -789,6 +827,7 @@ impl Client {
                         full.stats.token_mint_b,
                         params,
                         Some(full.stats.sqrt_price),
+                        None,
                     )?
                 } else {
                     None
@@ -856,6 +895,7 @@ impl Client {
                         header.mint1,
                         params,
                         Some(header.sqrt_price),
+                        None,
                     )?
                 } else {
                     None
@@ -910,6 +950,9 @@ impl Client {
                 if params.amount_a == 0 && params.amount_b == 0 {
                     bail!("DLMM create needs amount X and/or Y");
                 }
+                let strategy = params.dlmm_strategy.unwrap_or_else(|| {
+                    Self::dlmm_strategy_from_settings(settings)
+                });
                 let swap = if params.swap_to_match {
                     self.swap_for_create(
                         settings,
@@ -918,6 +961,11 @@ impl Client {
                         header.mint_y,
                         params,
                         None,
+                        Some(DlmmCreateSwapCtx {
+                            active_id: header.active_id,
+                            bin_step: header.bin_step,
+                            strategy,
+                        }),
                     )?
                 } else {
                     None
@@ -929,6 +977,20 @@ impl Client {
                 } else {
                     (params.amount_a, params.amount_b)
                 };
+                // Balanced scales to the limiting side — clamp caps so leftover isn't "lost".
+                let (amount_x, amount_y) = if strategy.is_balanced() {
+                    clamp_balanced_amounts(
+                        amount_x,
+                        amount_y,
+                        strategy,
+                        header.active_id,
+                        header.bin_step,
+                        params.tick_lower,
+                        params.tick_upper,
+                    )
+                } else {
+                    (amount_x, amount_y)
+                };
                 let mut plan = meteora_dlmm::write::plan_create_funded(
                     authority,
                     params,
@@ -939,6 +1001,7 @@ impl Client {
                     header.reserve_y,
                     amount_x,
                     amount_y,
+                    header.active_id,
                 )?;
                 let wrap = maybe_wrap_before_deposit(
                     params.sol_leg,
@@ -976,6 +1039,7 @@ impl Client {
         mint_b: Pubkey,
         params: &CreatePositionParams,
         sqrt_price: Option<u128>,
+        dlmm: Option<DlmmCreateSwapCtx>,
     ) -> Result<Option<SwapPlan>> {
         let shape = sol_clmm_manager::effective_deposit_shape(
             params.amount_a as u128,
@@ -991,23 +1055,19 @@ impl Client {
                 params.tick_upper,
                 shape,
             )
+        } else if let Some(ctx) = dlmm {
+            dlmm_swap_to_match_hint(
+                params.amount_a,
+                params.amount_b,
+                ctx.active_id,
+                ctx.bin_step,
+                params.tick_lower,
+                params.tick_upper,
+                ctx.strategy,
+                shape,
+            )
         } else {
-            // Meteora / no sqrt: single-side → swap half toward the other mint.
-            match shape {
-                DepositShape::SingleA if params.amount_a >= 2 => {
-                    Some(sol_clmm_manager::SwapToMatchHint {
-                        in_is_a: true,
-                        swap_in_amount: params.amount_a / 2,
-                    })
-                }
-                DepositShape::SingleB if params.amount_b >= 2 => {
-                    Some(sol_clmm_manager::SwapToMatchHint {
-                        in_is_a: false,
-                        swap_in_amount: params.amount_b / 2,
-                    })
-                }
-                _ => None,
-            }
+            None
         };
         let Some(hint) = hint else {
             return Ok(None);
@@ -1152,6 +1212,110 @@ impl Client {
             amount,
             slippage_bps,
         )
+    }
+
+    /// Free-form wallet swap: optional wrap → Jupiter/Titan → optional unwrap.
+    ///
+    /// When `input_is_native_sol`, `amount` is lamports wrapped into WSOL before the route.
+    /// When either mint is WSOL, close the WSOL ATA at the end (native SOL out).
+    pub fn assemble_wallet_swap(
+        &self,
+        settings: &AppSettings,
+        authority: Pubkey,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        amount: u64,
+        slippage_bps: u16,
+        input_is_native_sol: bool,
+    ) -> Result<(WritePlan, Option<u64>)> {
+        anyhow::ensure!(amount > 0, "swap amount must be > 0");
+        anyhow::ensure!(input_mint != output_mint, "from and to mints must differ");
+        let route_in = if input_is_native_sol {
+            sol_clmm_manager::wsol_mint()
+        } else {
+            input_mint
+        };
+        let swap = self.fetch_swap_for_match(
+            settings,
+            &authority,
+            &route_in,
+            &output_mint,
+            amount,
+            slippage_bps,
+        )?;
+        let mut ixs = Vec::new();
+        let mut wrap_n = 0usize;
+        if input_is_native_sol {
+            let wrap = wrap_sol_ixs(&authority, amount);
+            wrap_n = wrap.len();
+            ixs.extend(wrap);
+        }
+        ixs.extend(swap.instructions);
+        // Always unwrap leftover WSOL after wallet swaps involving SOL.
+        if is_wsol(&route_in) || is_wsol(&output_mint) {
+            ixs.push(sol_clmm_manager::unwrap_sol_ix(&authority));
+        }
+        let tip = swap.quote.tip_lamports;
+        let mut plan = WritePlan {
+            op: WriteOp::WalletSwap,
+            venue_label: swap.quote.router.short().into(),
+            summary: format!(
+                "swap {} → {} · {} in · ~{} out",
+                if input_is_native_sol {
+                    "SOL".into()
+                } else {
+                    input_mint.to_string()
+                },
+                output_mint,
+                swap.quote.in_amount,
+                swap.quote.out_amount
+            ),
+            instructions: ixs,
+            follow_up: None,
+            expected: ExpectedDeltas {
+                note: format!(
+                    "{} · {} → {} · wrap_prefix={wrap_n}",
+                    swap.quote.router.short(),
+                    swap.quote.in_amount,
+                    swap.quote.out_amount
+                ),
+                ..Default::default()
+            },
+            payer: authority,
+        };
+        dedupe_ata_create_idempotent(&mut plan.instructions);
+        Ok((plan, tip))
+    }
+
+    /// Create pool (+ optional deposit / swap). Extra signers = Orca vault keypairs.
+    pub fn assemble_create_pool(
+        &self,
+        _rpc: &RpcClient,
+        authority: Pubkey,
+        params: &CreatePoolParams,
+        _settings: &AppSettings,
+    ) -> Result<(WritePlan, Option<u64>, Vec<Keypair>)> {
+        match params.venue {
+            Venue::OrcaWhirlpool => {
+                let vault_a = Keypair::new();
+                let vault_b = Keypair::new();
+                let plan = orca_whirlpool::write::plan_create_pool(
+                    authority,
+                    params,
+                    vault_a.pubkey(),
+                    vault_b.pubkey(),
+                )?;
+                Ok((plan, None, vec![vault_a, vault_b]))
+            }
+            Venue::RaydiumClmm => {
+                let plan = raydium_clmm::write::plan_create_pool(authority, params)?;
+                Ok((plan, None, Vec::new()))
+            }
+            Venue::MeteoraDlmm => {
+                let plan = meteora_dlmm::write::plan_create_pool(authority, params)?;
+                Ok((plan, None, Vec::new()))
+            }
+        }
     }
 }
 

@@ -16,7 +16,11 @@ mod pool_scenario_tests;
 
 pub mod dlmm_strategy;
 
-pub use dlmm_strategy::{BinWeights, DlmmStrategy, distribute_bins};
+pub use dlmm_strategy::{
+    BinWeights, DlmmStrategy, MeteoraStrategyType, auto_fill_x, auto_fill_y, balanced_weight_totals,
+    balanced_weights, bin_raw_price, clamp_balanced_amounts, distribute_bins,
+    dlmm_swap_to_match_hint,
+};
 pub use liquidity::{
     CompoundFeePlan, DepositAnalysis, DepositShape, DepositSizing, LiquidityDeltaPlan,
     RangeDepositSide, SwapToMatchHint, amounts_for_liquidity_delta, analyze_deposit,
@@ -53,10 +57,14 @@ pub enum WriteOp {
     Compound,
     /// Open a new position; user supplies pool pubkey (+ range / amounts).
     CreatePosition,
-    /// Native SOL → WSOL ATA (`wrap_sol_ixs`) — manage standalone.
+    /// Native SOL → WSOL ATA (`wrap_sol_ixs`) — wallet standalone.
     WrapSol,
-    /// Close WSOL ATA → native SOL (`unwrap_sol_ix`) — manage standalone.
+    /// Close WSOL ATA → native SOL (`unwrap_sol_ix`) — wallet standalone.
     UnwrapSol,
+    /// Free-form Jupiter/Titan swap (wallet management).
+    WalletSwap,
+    /// Initialize a new pool / lb-pair (optional seed deposit + swap).
+    CreatePool,
 }
 
 impl WriteOp {
@@ -72,6 +80,8 @@ impl WriteOp {
             Self::CreatePosition => "create position",
             Self::WrapSol => "wrap SOL",
             Self::UnwrapSol => "unwrap SOL",
+            Self::WalletSwap => "wallet swap",
+            Self::CreatePool => "create pool",
         }
     }
 }
@@ -145,6 +155,63 @@ impl CreatePositionParams {
             _ => self.shape.label().to_string(),
         }
     }
+}
+
+/// How much liquidity to seed when creating a pool from Wallet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CreatePoolMode {
+    /// Initialize pool / lb-pair only.
+    #[default]
+    PoolOnly,
+    /// Init + open position + deposit (no Jupiter).
+    PoolDeposit,
+    /// Init + swap-to-match + open + deposit.
+    PoolDepositSwap,
+}
+
+impl CreatePoolMode {
+    pub const ALL: [CreatePoolMode; 3] = [Self::PoolOnly, Self::PoolDeposit, Self::PoolDepositSwap];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PoolOnly => "pool only",
+            Self::PoolDeposit => "pool + deposit",
+            Self::PoolDepositSwap => "pool + deposit + swap",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::PoolOnly => Self::PoolDeposit,
+            Self::PoolDeposit => Self::PoolDepositSwap,
+            Self::PoolDepositSwap => Self::PoolOnly,
+        }
+    }
+}
+
+/// Inputs for [`WriteOp::CreatePool`] (wallet management).
+#[derive(Debug, Clone)]
+pub struct CreatePoolParams {
+    pub venue: crate::Venue,
+    pub mint_a: Pubkey,
+    pub mint_b: Pubkey,
+    /// Orca tick spacing / Raydium fee-tier index / Meteora bin step.
+    pub fee_param: u16,
+    /// Initial human-ish price as B per A (raw ratio uses decimals at assemble).
+    pub initial_price: f64,
+    pub mode: CreatePoolMode,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub amount_a: u64,
+    pub amount_b: u64,
+    pub shape: DepositShape,
+    pub dlmm_strategy: Option<DlmmStrategy>,
+    pub swap_slippage_bps: u16,
+    pub sol_leg: SolLegMode,
+    pub symbol_a: Option<String>,
+    pub symbol_b: Option<String>,
+    pub decimals_a: u8,
+    pub decimals_b: u8,
 }
 
 /// Expected token movement shown in the confirm screen (raw units).

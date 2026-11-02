@@ -33,11 +33,16 @@ Dependency direction: protocols → manager; client → manager + protocols; TUI
 
 - Interactive human → `sol-clmm-tui` (`?` / `h` for in-app help).
 - Programmatic / agent reads → `sol_clmm_client::Client` (preferred) or call one protocol crate directly.
+- Writes (`--features write`) → `skills/sol-clmm-write` (wallet `w`, manage `m`, create `n`, history Δ).
 - Quotes HTTP (Jupiter/Titan) still live under manager `quotes` for now; future extract → `sol-clmm-quotes`.
+
+## Writes smoke (do not overclaim)
+
+Open position briefly tested on **Raydium + Meteora SOL/USDC** only. Other pools / create-pool / wallet flows still need dust testing. Prefer no-swap until autoswap P0 is fixed.
 
 ## Deferred (do not churn now)
 
 - `sol-clmm-core` / `sol-clmm-quotes` split
 - `sol-clmm-agent` binary
 
-See also: `skills/sol-clmm-read`, `skills/sol-clmm-pricing`.
+See also: `skills/sol-clmm-read`, `skills/sol-clmm-pricing`, `skills/sol-clmm-write`.

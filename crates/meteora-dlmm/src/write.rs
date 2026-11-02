@@ -4,9 +4,9 @@
 
 use anyhow::Result;
 use sol_clmm_manager::{
-    BinWeights, CreatePositionParams, DlmmStrategy, ExpectedDeltas, PositionDetail, SolLegMode,
-    WriteOp, WritePlan, distribute_bins, ensure_pool_atas_ixs, maybe_unwrap_after,
-    maybe_wrap_before_deposit,
+    BinWeights, CreatePositionParams, DlmmStrategy, ExpectedDeltas, MeteoraStrategyType,
+    PositionDetail, SolLegMode, WriteOp, WritePlan, distribute_bins, ensure_pool_atas_ixs,
+    maybe_unwrap_after, maybe_wrap_before_deposit,
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -17,7 +17,6 @@ use crate::dlmm_program_id;
 
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-const RENT_SYSVAR: &str = "SysvarRent111111111111111111111111111111111";
 const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 const CLAIM_FEE: [u8; 8] = [169, 32, 79, 137, 136, 232, 70, 137];
@@ -37,10 +36,6 @@ fn token_program() -> Pubkey {
 
 fn system_program() -> Pubkey {
     Pubkey::from_str(SYSTEM_PROGRAM).expect("system")
-}
-
-fn rent_sysvar() -> Pubkey {
-    Pubkey::from_str(RENT_SYSVAR).expect("rent")
 }
 
 fn associated_token_program() -> Pubkey {
@@ -220,51 +215,45 @@ pub fn add_liquidity_by_strategy2_ix(
     }
 }
 
-/// Minimal LiquidityParameterByStrategy borsh (amounts + strategy type Spot + range).
+/// `add_liquidity_by_strategy2` args:
+/// `LiquidityParameterByStrategy` + `RemainingAccountsInfo` (borsh).
 fn strategy_params_data(
     amount_x: u64,
     amount_y: u64,
     active_id: i32,
-    max_bin_bps: u16,
-    strategy_kind: u8,
+    max_active_bin_slippage: i32,
+    strategy_type: MeteoraStrategyType,
     min_bin: i32,
     max_bin: i32,
 ) -> Vec<u8> {
     // LiquidityParameterByStrategy {
-    //   amount_x, amount_y, active_id, max_active_bin_slippage,
-    //   strategy: { min_bin_id, max_bin_id, strategy_type, parameters: [u8;64] }
+    //   amount_x: u64, amount_y: u64, active_id: i32, max_active_bin_slippage: i32,
+    //   strategy_parameters: { min_bin_id: i32, max_bin_id: i32, strategy_type: u8, parameteres: [u8;64] }
     // }
-    let mut d = Vec::new();
+    // RemainingAccountsInfo { slices: Vec } — empty = u32 len 0
+    let mut d = Vec::with_capacity(8 + 8 + 4 + 4 + 4 + 4 + 1 + 64 + 4);
     d.extend_from_slice(&amount_x.to_le_bytes());
     d.extend_from_slice(&amount_y.to_le_bytes());
     d.extend_from_slice(&active_id.to_le_bytes());
-    d.extend_from_slice(&max_bin_bps.to_le_bytes());
+    d.extend_from_slice(&max_active_bin_slippage.to_le_bytes());
     d.extend_from_slice(&min_bin.to_le_bytes());
     d.extend_from_slice(&max_bin.to_le_bytes());
-    d.push(strategy_kind);
+    d.push(strategy_type.as_u8());
     d.extend_from_slice(&[0u8; 64]);
+    d.extend_from_slice(&0u32.to_le_bytes()); // RemainingAccountsInfo.slices = []
     d
 }
 
-fn strategy_kind(s: DlmmStrategy) -> u8 {
-    // Meteora StrategyType enum (common mapping)
-    match s {
-        DlmmStrategy::SpotConcentrated | DlmmStrategy::SpotSpread | DlmmStrategy::SpotWide => 0, // SpotOneSide / SpotBalanced
-        DlmmStrategy::Curve => 1,
-        DlmmStrategy::BidAsk => 2,
-    }
-}
-
-/// Plan bin weights for a deposit using one of the 5 strategies.
+/// Plan preview weights; range comes from the position (or ±12 bins around active).
 pub fn plan_bin_distribution(
     strategy: DlmmStrategy,
     active_id: i32,
     min_bin: Option<i32>,
     max_bin: Option<i32>,
 ) -> BinWeights {
-    let half = strategy.default_half_width();
-    let min_b = min_bin.unwrap_or(active_id - half);
-    let max_b = max_bin.unwrap_or(active_id + half);
+    const DEFAULT_HALF: i32 = 12;
+    let min_b = min_bin.unwrap_or(active_id - DEFAULT_HALF);
+    let max_b = max_bin.unwrap_or(active_id + DEFAULT_HALF);
     distribute_bins(strategy, min_b, max_b)
 }
 
@@ -347,12 +336,13 @@ pub fn plan_deposit_with_strategy(
         &detail.token_b.mint,
         wrap_amt,
     );
+    let meteora_ty = strategy.to_meteora();
     let tail = strategy_params_data(
         amount_x,
         amount_y,
         detail.pool.tick_current_index,
         3,
-        strategy_kind(strategy),
+        meteora_ty,
         detail.row.tick_lower,
         detail.row.tick_upper,
     );
@@ -370,8 +360,8 @@ pub fn plan_deposit_with_strategy(
         op: WriteOp::Deposit,
         venue_label: "meteora dlmm".into(),
         summary: format!(
-            "deposit · {} · {} bins weighted",
-            strategy.short(),
+            "deposit · {} · {} bins",
+            meteora_ty.label(),
             weights.bins.len()
         ),
         instructions: ixs,
@@ -380,8 +370,8 @@ pub fn plan_deposit_with_strategy(
             amount_a: -(amount_x as i128),
             amount_b: -(amount_y as i128),
             note: format!(
-                "wrap? → strategy {} · add_liquidity_by_strategy2 → unwrap?",
-                strategy.short()
+                "wrap? → {} · add_liquidity_by_strategy2 → unwrap?",
+                meteora_ty.label()
             ),
             ..Default::default()
         },
@@ -530,25 +520,28 @@ pub fn plan_create_funded(
     reserve_y: Pubkey,
     amount_x: u64,
     amount_y: u64,
+    // Pool active_id (not range midpoint) — slippage check + strategy.
+    active_id: i32,
 ) -> Result<WritePlan> {
     let strategy = params.dlmm_strategy.unwrap_or_default();
     // Wrap is prepended by Client::assemble (wallet SOL only).
     let mut ixs = Vec::new();
 
-    // initialize_position2 args: lower_bin_id, width (u32)
-    let width = (params.tick_upper - params.tick_lower + 1).max(1) as u32;
+    // initialize_position2 args: lower_bin_id: i32, width: i32
+    let width = (params.tick_upper - params.tick_lower + 1).max(1) as i32;
     let mut init_data = INITIALIZE_POSITION2.to_vec();
     init_data.extend_from_slice(&params.tick_lower.to_le_bytes());
     init_data.extend_from_slice(&width.to_le_bytes());
+    // initialize_position2 accounts (no rent): payer, position, lb_pair, owner,
+    // system_program, event_authority, program.
     ixs.push(Instruction {
         program_id: program_id(),
         accounts: vec![
             AccountMeta::new(authority, true), // payer
             AccountMeta::new(position, true),  // position (signer / new key)
             AccountMeta::new_readonly(params.pool, false),
-            AccountMeta::new_readonly(authority, false), // owner
+            AccountMeta::new_readonly(authority, true), // owner (signer)
             AccountMeta::new_readonly(system_program(), false),
-            AccountMeta::new_readonly(rent_sysvar(), false),
             AccountMeta::new_readonly(event_authority(), false),
             AccountMeta::new_readonly(program_id(), false),
         ],
@@ -584,13 +577,13 @@ pub fn plan_create_funded(
         idx += 1;
     }
     let _ = (bin_lo, bin_hi);
-    let active = (params.tick_lower + params.tick_upper) / 2;
+    let meteora_ty = strategy.to_meteora();
     let tail = strategy_params_data(
         amount_x,
         amount_y,
-        active,
+        active_id,
         3,
-        strategy_kind(strategy),
+        meteora_ty,
         params.tick_lower,
         params.tick_upper,
     );
@@ -610,7 +603,7 @@ pub fn plan_create_funded(
             &params.pool.to_string()[..8],
             params.tick_lower,
             params.tick_upper,
-            strategy.short(),
+            meteora_ty.label(),
             swap
         ),
         instructions: ixs,
@@ -618,9 +611,61 @@ pub fn plan_create_funded(
         expected: ExpectedDeltas {
             amount_a: -(amount_x as i128),
             amount_b: -(amount_y as i128),
-            note: "wrap? → initialize_position2 + add_liquidity_by_strategy2 · 1 tx v1".into(),
+            note: format!(
+                "wrap? → initialize_position2 + add_liquidity_by_strategy2 ({}) · 1 tx v1",
+                meteora_ty.label()
+            ),
             ..Default::default()
         },
         payer: authority,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_authority_matches_meteora() {
+        let ea = event_authority();
+        assert_eq!(
+            ea.to_string(),
+            "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6",
+            "got {ea}"
+        );
+    }
+
+    #[test]
+    fn strategy2_args_len_matches_idl() {
+        // u64+u64+i32+i32 + i32+i32+u8+[u8;64] + RemainingAccountsInfo(u32=0)
+        let d = strategy_params_data(
+            1,
+            2,
+            -5900,
+            3,
+            MeteoraStrategyType::CurveBalanced,
+            -5931,
+            -5864,
+        );
+        assert_eq!(d.len(), 8 + 8 + 4 + 4 + 4 + 4 + 1 + 64 + 4);
+        assert_eq!(&d[16..20], &(-5900i32).to_le_bytes()); // active_id
+        assert_eq!(&d[20..24], &3i32.to_le_bytes()); // max_active_bin_slippage
+        assert_eq!(d[32], MeteoraStrategyType::CurveBalanced.as_u8());
+        assert_eq!(&d[d.len() - 4..], &0u32.to_le_bytes()); // empty remaining slices
+    }
+}
+
+
+/// Create a Meteora DLMM lb-pair (customizable permissionless).
+///
+/// Account graph (token badges, bitmap extension, fee packing) not fully wired yet.
+pub fn plan_create_pool(
+    _authority: Pubkey,
+    params: &sol_clmm_manager::CreatePoolParams,
+) -> anyhow::Result<WritePlan> {
+    anyhow::bail!(
+        "Meteora create pool not wired yet (bin_step={}, mode={}) · use Orca/Raydium or n create on an existing DLMM pool",
+        params.fee_param,
+        params.mode.label()
+    )
 }

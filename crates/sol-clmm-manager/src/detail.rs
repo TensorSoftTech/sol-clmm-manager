@@ -43,6 +43,10 @@ pub struct PositionDetail {
     pub pool: PoolStats,
     /// Position NFT mint (Orca / Raydium). `None` for Meteora DLMM.
     pub position_mint: Option<Pubkey>,
+    /// Token program that owns the position NFT mint (Token or Token-2022).
+    /// Raydium: either (legacy `OpenPositionV2` vs `OpenPositionWithToken22Nft`).
+    /// Orca: classic Token. `None` for Meteora.
+    pub position_nft_token_program: Option<Pubkey>,
     /// Claimable pool rewards: `(reward_index, mint, vault)`.
     /// Empty, inactive, and ended slots omitted (no reward ATA CreateIdempotent).
     /// Included when actively emitting, or inactive/ended with owed > 0.

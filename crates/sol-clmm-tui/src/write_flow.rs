@@ -3,8 +3,8 @@
 use sol_clmm_manager::{
     CreatePositionParams, DepositAnalysis, DepositShape, DepositSizing, DlmmStrategy, PoolPreview,
     RangeDepositSide, SolLegMode, Venue, WalletPoolBalances, WritePlan, amounts_for_liquidity_delta,
-    analyze_deposit, compound_fee_plan, format_amount, format_price, is_wsol, parse_ui_amount,
-    pool_has_wsol, range_deposit_side,
+    analyze_deposit, compound_fee_plan, distribute_bins, format_amount, format_price, is_wsol,
+    parse_ui_amount, pool_has_wsol, range_deposit_side,
 };
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -167,8 +167,9 @@ impl CreateWizard {
             swap_to_match: false,
             swap_router: "jupiter".into(),
             swap_slippage_idx: 0, // recommended
-            sol_leg: SolLegMode::Wsol,
-            dlmm_idx: 0,
+            // Product default: treat SOL as native (wrap on demand). Wsol-only is opt-in on SolLeg.
+            sol_leg: SolLegMode::NativeSol,
+            dlmm_idx: 4, // CurveBalanced default
             error: None,
             choice: 0,
             fetching: false,
@@ -233,23 +234,76 @@ impl CreateWizard {
     }
 
     pub fn dlmm_strategy(&self) -> DlmmStrategy {
-        match self.dlmm_idx % 5 {
-            1 => DlmmStrategy::BidAsk,
-            2 => DlmmStrategy::SpotConcentrated,
-            3 => DlmmStrategy::SpotSpread,
-            4 => DlmmStrategy::SpotWide,
-            _ => DlmmStrategy::Curve,
-        }
+        DlmmStrategy::ALL[self.dlmm_idx % DlmmStrategy::ALL.len()]
     }
 
     pub fn dlmm_label(idx: usize) -> &'static str {
-        match idx % 5 {
-            1 => "bid-ask",
-            2 => "spot-tight",
-            3 => "spot-spread",
-            4 => "spot-wide",
-            _ => "curve",
+        DlmmStrategy::ALL[idx % DlmmStrategy::ALL.len()].label()
+    }
+
+    /// Compact ASCII weight shape for the selected Meteora strategy over the draft bin range.
+    fn dlmm_shape_preview(&self) -> Vec<String> {
+        let Some(p) = &self.preview else {
+            return Vec::new();
+        };
+        let strategy = self.dlmm_strategy();
+        let lo = p.tick_lower;
+        let hi = p.tick_upper;
+        if lo >= hi {
+            return vec!["shape · invalid range".into()];
         }
+        let weights = distribute_bins(strategy, lo, hi);
+        if weights.bins.is_empty() {
+            return Vec::new();
+        }
+        const COLS: usize = 28;
+        const ROWS: usize = 4;
+        let n = weights.bins.len();
+        let mut cols = vec![0.0f64; COLS];
+        let max_w = weights
+            .bins
+            .iter()
+            .map(|(_, w)| *w)
+            .fold(0.0f64, f64::max)
+            .max(1e-9);
+        for (i, col) in cols.iter_mut().enumerate() {
+            let start = i * n / COLS;
+            let end = ((i + 1) * n / COLS).max(start + 1).min(n);
+            let slice = &weights.bins[start..end];
+            let avg = slice.iter().map(|(_, w)| *w).sum::<f64>() / slice.len() as f64;
+            *col = avg / max_w;
+        }
+        let mut lines = Vec::with_capacity(ROWS + 2);
+        lines.push(format!(
+            "shape · {} · bins [{lo}, {hi}] · {n} bins",
+            strategy.short(),
+        ));
+        for row in (0..ROWS).rev() {
+            let threshold = (row as f64 + 0.5) / ROWS as f64;
+            let mut s = String::with_capacity(COLS + 2);
+            s.push('│');
+            for &v in &cols {
+                s.push(if v >= threshold { '█' } else { ' ' });
+            }
+            s.push('│');
+            lines.push(s);
+        }
+        let active = p.pool.tick_current_index;
+        let marker = if active < lo {
+            "◀ out".into()
+        } else if active > hi {
+            "out ▶".into()
+        } else {
+            let pos = ((active - lo) as f64 / (hi - lo).max(1) as f64 * (COLS - 1) as f64).round()
+                as usize;
+            let mut m = vec![' '; COLS];
+            m[pos.min(COLS - 1)] = '▼';
+            format!(" {}", m.into_iter().collect::<String>())
+        };
+        lines.push(format!("└{}┘", "─".repeat(COLS)));
+        lines.push(format!(" active {marker}"));
+        lines.push("ImBalanced · TODO".into());
+        lines
     }
 
     pub fn step_title(&self) -> String {
@@ -298,14 +352,9 @@ impl CreateWizard {
     }
 
     fn use_native_sol(&self) -> bool {
-        if self.sol_leg == SolLegMode::NativeSol {
-            return true;
-        }
-        // Dual typed on USDC (etc.): include native SOL in pair autofill max without asking wrap.
-        self.step == CreateStep::Deposit
-            && self.deposit_mode() == DepositMode::Dual
-            && !self.funding_wsol_from_wallet()
-            && self.pool_has_wsol_mint()
+        // Caps must include native SOL whenever we will wrap (default + SolLeg NativeSol).
+        // Previously defaulted to Wsol, so 1-side SOL max showed only the wrapped dust ATA.
+        self.sol_leg == SolLegMode::NativeSol
     }
 
     fn pool_has_wsol_mint(&self) -> bool {
@@ -710,6 +759,8 @@ impl CreateWizard {
                     }
                 }
                 DepositMode::SingleA | DepositMode::SingleB => {
+                    let (da, db) = self.draft_amounts();
+                    let typed = da > 0 || db > 0;
                     if an.swap_needed || !an.shape_ok_without_swap {
                         if let Some(h) = an.swap {
                             let (from, to) = if h.in_is_a { (sa, sb) } else { (sb, sa) };
@@ -718,6 +769,13 @@ impl CreateWizard {
                                 self.fmt_raw(h.swap_in_amount as u128, h.in_is_a),
                                 an.liquidity_with_swap,
                             ));
+                        } else if p.pool.sqrt_price == 0 {
+                            // DLMM: no CLMM swap hint — don't imply a sized Jupiter route yet.
+                            lines.push(if typed {
+                                format!("1-side in-range · may autoswap · {}", an.note)
+                            } else {
+                                format!("1-side in-range · {}", an.note)
+                            });
                         } else {
                             lines.push(format!("will autoswap · {}", an.note));
                         }
@@ -1012,11 +1070,14 @@ impl CreateWizard {
                 ));
             }
             CreateStep::DlmmStrategy => {
-                out.push("↑↓ · Enter".into());
-                for i in 0..5 {
-                    let mark = if i == self.dlmm_idx % 5 { "▸" } else { " " };
+                out.push("↑↓ Meteora StrategyType · Enter".into());
+                let n = DlmmStrategy::ALL.len();
+                for i in 0..n {
+                    let mark = if i == self.dlmm_idx % n { "▸" } else { " " };
                     out.push(format!("{mark} {}", Self::dlmm_label(i)));
                 }
+                out.push(String::new());
+                out.extend(self.dlmm_shape_preview());
             }
             CreateStep::Review => {
                 if let Some(p) = &self.preview {
@@ -1165,7 +1226,7 @@ impl CreateWizard {
                 CreateAdvance::Continue
             }
             CreateStep::DlmmStrategy => {
-                self.dlmm_idx = self.choice % 5;
+                self.dlmm_idx = self.choice % DlmmStrategy::ALL.len();
                 self.step = CreateStep::Review;
                 CreateAdvance::Continue
             }
@@ -1273,11 +1334,8 @@ impl CreateWizard {
                 self.choice = self.choice.saturating_sub(1);
             }
             CreateStep::DlmmStrategy => {
-                self.dlmm_idx = if self.dlmm_idx == 0 {
-                    4
-                } else {
-                    self.dlmm_idx - 1
-                };
+                let n = DlmmStrategy::ALL.len();
+                self.dlmm_idx = if self.dlmm_idx == 0 { n - 1 } else { self.dlmm_idx - 1 };
                 self.choice = self.dlmm_idx;
             }
             CreateStep::Range => {
@@ -1334,7 +1392,7 @@ impl CreateWizard {
                 self.choice = (self.choice + 1) % 2;
             }
             CreateStep::DlmmStrategy => {
-                self.dlmm_idx = (self.dlmm_idx + 1) % 5;
+                self.dlmm_idx = (self.dlmm_idx + 1) % DlmmStrategy::ALL.len();
                 self.choice = self.dlmm_idx;
             }
             CreateStep::Range => {
@@ -1422,10 +1480,16 @@ impl CreateWizard {
                 _ => {}
             }
         }
-        let sol_leg = if self.pool_needs_sol_leg() {
+        // SOL pairs: prefer NativeSol so create always ends with unwrap (close WSOL ATA).
+        // Wrap still only runs when funding the SOL side (`wrap_lamports_from_wallet`).
+        // USDC-only + Jupiter (wrapAndUnwrapSol=false) must still unwrap leftovers —
+        // previously we forced Wsol here and skipped that suffix on Raydium/Meteora/Orca.
+        let sol_leg = if !self.pool_has_wsol_mint() {
+            SolLegMode::Wsol
+        } else if self.pool_needs_sol_leg() {
             self.sol_leg
         } else {
-            SolLegMode::Wsol
+            SolLegMode::NativeSol
         };
         Ok(CreatePositionParams {
             venue: self.venue(),

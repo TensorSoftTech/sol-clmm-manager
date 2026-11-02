@@ -41,9 +41,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         #[cfg(not(feature = "write"))]
         Screen::ManageDeposit => draw_detail(frame, app),
         #[cfg(feature = "write")]
-        Screen::ManageWrap => draw_manage_wrap(frame, app),
+        Screen::Wallet => draw_wallet(frame, app),
         #[cfg(not(feature = "write"))]
-        Screen::ManageWrap => draw_detail(frame, app),
+        Screen::Wallet => draw_detail(frame, app),
         #[cfg(feature = "write")]
         Screen::ManageCompound => draw_manage_compound(frame, app),
         #[cfg(not(feature = "write"))]
@@ -327,20 +327,44 @@ fn draw_manage_deposit(frame: &mut Frame, app: &mut App) {
 }
 
 #[cfg(feature = "write")]
-fn draw_manage_wrap(frame: &mut Frame, app: &mut App) {
+fn draw_wallet(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
         .split(area);
 
+    let loading = app.wallet_loading || matches!(app.pending, PendingWork::Wallet);
+    if loading {
+        draw_panel_load(
+            frame,
+            chunks[0],
+            app.load_bar_ratio(),
+            "wallet",
+            "loading balances…",
+        );
+        draw_footer(frame, app, chunks[1]);
+        return;
+    }
+
     let lines = app
-        .manage_wrap
+        .wallet_wiz
         .as_ref()
         .map(|w| style_wizard_lines(w.lines()))
-        .unwrap_or_else(|| vec![Line::from("no wrap wizard")]);
+        .unwrap_or_else(|| {
+            vec![Line::from(Span::styled(
+                "balances failed · Esc back · w retry",
+                theme::danger(),
+            ))]
+        });
+    let title = match app.wallet_wiz.as_ref() {
+        Some(w) if w.wrap.is_some() => "wallet · wrap SOL",
+        Some(w) if w.swap.is_some() => "wallet · swap",
+        Some(w) if w.create_pool.is_some() => "wallet · create pool",
+        _ => "wallet · wrap · unwrap · swap · create pool",
+    };
     frame.render_widget(
-        Paragraph::new(lines).block(panel("wrap SOL", false)),
+        Paragraph::new(lines).block(panel(title, false)),
         chunks[0],
     );
     draw_footer(frame, app, chunks[1]);
@@ -390,15 +414,23 @@ fn draw_manage_withdraw(frame: &mut Frame, app: &mut App) {
 
 fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    #[cfg(not(feature = "write"))]
+    {
+        let _ = app;
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "rebuild with --features write",
+                theme::danger(),
+            ))
+            .block(panel("confirm write", false)),
+            area,
+        );
+        return;
+    }
+    #[cfg(feature = "write")]
+    {
     let tip_phase = app.write_confirm.as_ref().is_some_and(|c| {
-        #[cfg(feature = "write")]
-        {
-            c.phase == crate::write_flow::ConfirmPhase::Tip
-        }
-        #[cfg(not(feature = "write"))]
-        {
-            false
-        }
+        c.phase == crate::write_flow::ConfirmPhase::Tip
     });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -418,30 +450,25 @@ fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
         })
         .split(area);
 
-    #[cfg(feature = "write")]
-    {
-        let busy = app
-            .write_confirm
-            .as_ref()
-            .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy);
-        if busy {
-            draw_panel_load(
-                frame,
-                Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
-                    .split(area)[0],
-                app.load_bar_ratio(),
-                "confirm write",
-                "sending · waiting for confirmation…",
-            );
-            draw_footer(frame, app, chunks[2]);
-            return;
-        }
+    let busy = app
+        .write_confirm
+        .as_ref()
+        .is_some_and(|c| c.phase == crate::write_flow::ConfirmPhase::Busy);
+    if busy {
+        draw_panel_load(
+            frame,
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(8), Constraint::Length(FOOTER_H)])
+                .split(area)[0],
+            app.load_bar_ratio(),
+            "confirm write",
+            "sending · waiting for confirmation…",
+        );
+        draw_footer(frame, app, chunks[2]);
+        return;
     }
 
-    #[cfg(feature = "write")]
-    {
         let Some(c) = &app.write_confirm else {
             frame.render_widget(
                 Paragraph::new(Span::styled("confirm empty · Esc", theme::muted()))
@@ -638,19 +665,6 @@ fn draw_write_confirm(frame: &mut Frame, app: &mut App) {
                 .scroll((scroll, 0))
                 .block(panel(log_title, false)),
             chunks[1],
-        );
-        draw_footer(frame, app, chunks[2]);
-    }
-
-    #[cfg(not(feature = "write"))]
-    {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "rebuild with --features write",
-                theme::danger(),
-            ))
-            .block(panel("confirm write", false)),
-            chunks[0],
         );
         draw_footer(frame, app, chunks[2]);
     }
@@ -1246,6 +1260,16 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     );
     push(
         &mut out,
+        HelpStyle::Key,
+        "  w            wallet tools (write) · wrap / unwrap / swap / create pool",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  n            create position (write) · paste pool + range",
+    );
+    push(
+        &mut out,
         HelpStyle::Body,
         "  Columns: venue · pool · ≈ position USD · pool TVL · claim-sim fees · tick/bin range.",
     );
@@ -1399,7 +1423,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  DLMM deposits: curve · bid-ask · spot-tight · spot-spread · spot-wide.",
+        "  DLMM StrategyType: Spot/Curve/BidAsk × OneSide|Balanced (ImBalanced TODO).",
     );
     push(
         &mut out,
@@ -1410,6 +1434,11 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
         &mut out,
         HelpStyle::Body,
         "  Create: n · venue · pool pubkey · range chart · side/amount · review.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  Wallet: w · wrap/unwrap SOL · Jupiter/Titan swap · create pool (Orca/Raydium; Meteora stub).",
     );
     push(
         &mut out,
@@ -2233,8 +2262,13 @@ fn draw_positions(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
 
     let title = format!(
-        "positions · {} · ? help · v venue · y history · r refresh · Enter detail",
-        app.venue_filter.label()
+        "positions · {} · ? help · v venue · y history · r refresh{} · Enter detail",
+        app.venue_filter.label(),
+        if app.writes_live() {
+            " · n create · w wallet"
+        } else {
+            ""
+        },
     );
     let table = Table::new(rows, widths)
         .header(header)

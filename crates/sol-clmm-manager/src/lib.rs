@@ -59,8 +59,8 @@ pub use rpc::{
 };
 pub use snapshots::{PoolPeriodReport, PoolSnapshotInput};
 pub use stables::{
-    PRICE_TICK_SPACINGS, PYUSD, USDC, USDE, USDT, USDY, WHIRLPOOLS_CONFIG, WSOL, is_stablecoin,
-    stablecoin_mints, wsol_mint,
+    JUP, JUPUSD, PRICE_TICK_SPACINGS, PYUSD, USDC, USDE, USDT, USDY, WHIRLPOOLS_CONFIG, WSOL,
+    is_stablecoin, popular_swap_mints, stablecoin_mints, wsol_mint,
 };
 pub use store::{
     APP_DIR_NAME, AppSettings, CachedToken, DEFAULT_DB_FILE, Store, WritePoolMeta, WriteTokenDelta,
@@ -72,24 +72,25 @@ pub use tokens::{
 };
 pub use venue::{Venue, VenueFilter};
 pub use wallet::{
-    SOL_FEE_RESERVE_LAMPORTS, SideBalance, WalletPoolBalances, ata_address,
-    fetch_wallet_pool_balances,
+    SOL_FEE_RESERVE_LAMPORTS, SideBalance, WalletPoolBalances, WalletTokenBalance, ata_address,
+    fetch_wallet_pool_balances, fetch_wallet_token_balances,
 };
 
 #[cfg(feature = "write")]
 pub use write::{
-    BinWeights, BudgetMode, CompoundFeePlan, CreatePositionParams, DepositAnalysis, DepositShape,
-    DepositSizing, DlmmStrategy, ExpectedDeltas, LiquidityDeltaPlan, PreparedTx, RangeDepositSide,
-    SendOutcome, SolLegMode, SwapMode, SwapPlan, SwapQuote, SwapToMatchHint, TxBudget, TxBuildError,
-    WriteOp, WritePlan, amounts_for_liquidity_delta, analyze_deposit, compound_fee_plan,
-    deposit_ratio_planner, distribute_bins, effective_deposit_shape, estimate_budget,
-    estimate_budget_signers, fetch_swap_instructions, is_wsol, create_ata_idempotent_ix,
-    dedupe_ata_create_idempotent, ensure_atas_ixs, ensure_pool_atas_ixs, liquidity_delta_for_open,
-    liquidity_delta_from_amounts, maybe_unwrap_after, maybe_wrap_before_deposit, plan_unwrap_sol,
-    plan_wrap_sol, pool_has_wsol, range_deposit_side, swap_to_match_hint,
+    BinWeights, BudgetMode, CompoundFeePlan, CreatePoolMode, CreatePoolParams, CreatePositionParams,
+    DepositAnalysis, DepositShape, DepositSizing, DlmmStrategy, ExpectedDeltas, LiquidityDeltaPlan,
+    MeteoraStrategyType, PreparedTx, RangeDepositSide, SendOutcome, SolLegMode, SwapMode, SwapPlan,
+    SwapQuote, SwapToMatchHint, TxBudget, TxBuildError, WriteOp, WritePlan,
+    amounts_for_liquidity_delta, analyze_deposit, auto_fill_x, auto_fill_y, clamp_balanced_amounts,
+    compound_fee_plan, create_ata_idempotent_ix, dedupe_ata_create_idempotent, deposit_ratio_planner,
+    distribute_bins, dlmm_swap_to_match_hint, effective_deposit_shape, ensure_atas_ixs,
+    ensure_pool_atas_ixs, estimate_budget, estimate_budget_signers, fetch_swap_instructions,
+    is_wsol, liquidity_delta_for_open, liquidity_delta_from_amounts, maybe_unwrap_after,
+    maybe_wrap_before_deposit, plan_unwrap_sol, plan_wrap_sol, pool_has_wsol,
     prepare_estimate_simulate_send, prepare_estimate_simulate_send_signers, prepare_v1_tx,
-    prepare_v1_tx_signers, simulate_and_send_v1, simulate_v1_tx, unwrap_sol_ix, wrap_sol_ixs,
-    wsol_ata,
+    prepare_v1_tx_signers, range_deposit_side, simulate_and_send_v1, simulate_v1_tx,
+    swap_to_match_hint, unwrap_sol_ix, wrap_sol_ixs, wsol_ata,
 };
 
 /// Solscan account URL (mainnet).

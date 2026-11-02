@@ -270,7 +270,12 @@ fn known_decimals(mint: &Pubkey) -> Option<u8> {
     match mint.to_string().as_str() {
         "So11111111111111111111111111111111111111112" => Some(9),
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        | "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" => Some(6),
+        | "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+        | "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+        | "DEkqHyPN7GFyrVFbDp3Sy3PfX7pPDixE9eUV2oc8agnF"
+        | "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD"
+        | "A1KLoBrKBde8Ty9qtNQUtq3C2ortoC3u7twggz7sEto6" => Some(6),
+        "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN" => Some(6),
         _ => None,
     }
 }
@@ -349,8 +354,20 @@ fn known_mints() -> HashMap<String, &'static str> {
             "PYTH",
         ),
         ("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN".into(), "JUP"),
+        (
+            "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD".into(),
+            "jupUSD",
+        ),
         ("4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R".into(), "RAY"),
         ("orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE".into(), "ORCA"),
+        (
+            "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo".into(),
+            "PYUSD",
+        ),
+        (
+            "DEkqHyPN7GFyrVFbDp3Sy3PfX7pPDixE9eUV2oc8agnF".into(),
+            "USDe",
+        ),
     ])
 }
 

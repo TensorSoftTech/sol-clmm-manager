@@ -46,9 +46,9 @@ pub enum Screen {
     /// Add liquidity to an open position (2-side / 1-side).
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     ManageDeposit,
-    /// Wrap native SOL → WSOL ATA.
+    /// List-level wallet tools: wrap / unwrap / swap / create pool.
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
-    ManageWrap,
+    Wallet,
     /// Claim fees → redeposit (compound).
     #[cfg_attr(not(feature = "write"), allow(dead_code))]
     ManageCompound,
@@ -71,10 +71,6 @@ pub enum ManageChoice {
     Deposit,
     /// Claim fees → redeposit (no-swap / with-swap).
     Compound,
-    /// Native SOL → WSOL (`wrap_sol_ixs`).
-    WrapSol,
-    /// Close WSOL ATA → native SOL (`unwrap_sol_ix`).
-    UnwrapSol,
     /// Claim fees+rewards + withdraw all + close position account.
     Close,
     /// Claim fees+rewards + withdraw all liquidity (keep account).
@@ -87,11 +83,9 @@ pub enum ManageChoice {
 
 #[cfg(feature = "write")]
 impl ManageChoice {
-    pub const ALL: [ManageChoice; 8] = [
+    pub const ALL: [ManageChoice; 6] = [
         ManageChoice::Deposit,
         ManageChoice::Compound,
-        ManageChoice::WrapSol,
-        ManageChoice::UnwrapSol,
         ManageChoice::Close,
         ManageChoice::ClaimWithdraw,
         ManageChoice::Withdraw,
@@ -102,8 +96,6 @@ impl ManageChoice {
         match self {
             Self::Deposit => "deposit",
             Self::Compound => "compound",
-            Self::WrapSol => "wrap SOL",
-            Self::UnwrapSol => "unwrap SOL",
             Self::Close => "close position",
             Self::ClaimWithdraw => "claim + withdraw",
             Self::Withdraw => "withdraw liquidity",
@@ -115,8 +107,6 @@ impl ManageChoice {
         match self {
             Self::Deposit => "add liquidity · SOL as native · Jupiter wrapAndUnwrapSol on autoswap",
             Self::Compound => "claim fees → redeposit · no-swap ratio or with-swap residual",
-            Self::WrapSol => "native SOL → WSOL ATA · standalone",
-            Self::UnwrapSol => "close WSOL ATA → native SOL · standalone",
             Self::Close => "claim fees → withdraw all → unwrap SOL → close account (1 tx)",
             Self::ClaimWithdraw => "claim fees → withdraw % of L · unwrap SOL · keep NFT",
             Self::Withdraw => "withdraw % of liquidity · unwrap SOL · fees stay unclaimed",
@@ -432,6 +422,9 @@ pub enum PendingWork {
     Detail {
         refresh_meta: bool,
     },
+    /// Wallet screen balances (wrap / swap / create pool).
+    #[cfg(feature = "write")]
+    Wallet,
 }
 
 /// Result of a background list/detail fetch (keeps UI animating).
@@ -443,6 +436,11 @@ pub enum BgFetchResult {
     },
     Detail {
         result: Box<Result<PositionDetail>>,
+        meter: RpcMeter,
+    },
+    #[cfg(feature = "write")]
+    Wallet {
+        result: Box<anyhow::Result<(u64, Vec<sol_clmm_manager::WalletTokenBalance>)>>,
         meter: RpcMeter,
     },
     #[cfg(feature = "write")]
@@ -511,6 +509,9 @@ pub struct App {
     pub detail_chart_half_spacings: i32,
     /// True while list RPC is in flight (survives clearing `pending` before fetch).
     pub list_loading: bool,
+    /// True while wallet balance RPC is in flight (Wallet screen load bar).
+    #[cfg(feature = "write")]
+    pub wallet_loading: bool,
     /// `p` pubkey overlay active — second `p` restores the previous status line.
     pub links_overlay: bool,
     status_before_links: Option<String>,
@@ -529,7 +530,8 @@ pub struct App {
     #[cfg(feature = "write")]
     pub manage_deposit: Option<crate::write_flow::ManageDepositWizard>,
     #[cfg(feature = "write")]
-    pub manage_wrap: Option<crate::write_flow::ManageWrapWizard>,
+    #[cfg(feature = "write")]
+    pub wallet_wiz: Option<crate::wallet_flow::WalletWizard>,
     #[cfg(feature = "write")]
     pub manage_compound: Option<crate::write_flow::ManageCompoundWizard>,
     #[cfg(feature = "write")]
@@ -578,7 +580,7 @@ impl App {
             write_allowed: None,
             write_prompt_skip: false,
             keypair_path: None,
-            dlmm_strategy: "curve".into(),
+            dlmm_strategy: "CurveBalanced".into(),
             rpc_url: rpc_url.clone(),
             cli_rpc_url: rpc_url,
             cli_wallet: wallet,
@@ -600,6 +602,8 @@ impl App {
             detail_loading: false,
             detail_chart_half_spacings: sol_clmm_manager::CHART_HALF_SPACINGS_DEFAULT,
             list_loading: false,
+            #[cfg(feature = "write")]
+            wallet_loading: false,
             links_overlay: false,
             status_before_links: None,
             load_started: None,
@@ -612,7 +616,7 @@ impl App {
             #[cfg(feature = "write")]
             manage_deposit: None,
             #[cfg(feature = "write")]
-            manage_wrap: None,
+            wallet_wiz: None,
             #[cfg(feature = "write")]
             manage_compound: None,
             #[cfg(feature = "write")]
@@ -924,13 +928,13 @@ impl App {
         let shown = self.filtered_indices().len();
         let total = self.positions.len();
         let venue = self.venue_filter.label();
-        let create_hint = if sol_clmm_manager::WRITE_ENABLED {
-            " · n create"
+        let write_hint = if sol_clmm_manager::WRITE_ENABLED {
+            " · n create · w wallet"
         } else {
             ""
         };
         format!(
-            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue · y history{create_hint} · Enter detail · p pubkey · s settings · r refresh · q"
+            "ok · {kind} · {shown}/{total} · {venue} · ? help · v venue · y history{write_hint} · Enter detail · p pubkey · s settings · r refresh · q"
         )
     }
 
@@ -1081,7 +1085,7 @@ impl App {
                 | Screen::SettingsApiKey
                 | Screen::Manage
                 | Screen::ManageDeposit
-                | Screen::ManageWrap
+                | Screen::Wallet
                 | Screen::ManageCompound
                 | Screen::ManageWithdraw
                 | Screen::CreatePosition
@@ -1123,19 +1127,6 @@ impl App {
                     "deposit".into()
                 }
             }
-            Screen::ManageWrap => {
-                #[cfg(feature = "write")]
-                {
-                    self.manage_wrap
-                        .as_ref()
-                        .map(|w| w.status_hint())
-                        .unwrap_or_else(|| "wrap SOL".into())
-                }
-                #[cfg(not(feature = "write"))]
-                {
-                    "wrap SOL".into()
-                }
-            }
             Screen::ManageCompound => {
                 #[cfg(feature = "write")]
                 {
@@ -1166,6 +1157,19 @@ impl App {
             Screen::Settings => "settings · ↑↓ · Enter · ? help · Esc back".into(),
             Screen::CreatePosition => {
                 "create · ←→ range · Tab edge · Enter next · Esc back".into()
+            }
+            Screen::Wallet => {
+                #[cfg(feature = "write")]
+                {
+                    self.wallet_wiz
+                        .as_ref()
+                        .map(|w| w.status_hint())
+                        .unwrap_or_else(|| "wallet".into())
+                }
+                #[cfg(not(feature = "write"))]
+                {
+                    "wallet".into()
+                }
             }
             Screen::WriteConfirm => {
                 "manage tx · [ ] tip · Enter sim/send · Esc".into()
@@ -1205,8 +1209,19 @@ impl App {
                 false
             }
         };
+        let wallet_busy = {
+            #[cfg(feature = "write")]
+            {
+                self.wallet_loading
+            }
+            #[cfg(not(feature = "write"))]
+            {
+                false
+            }
+        };
         self.list_loading
             || self.detail_loading
+            || wallet_busy
             || self.bg_rx.is_some()
             || self.pending != PendingWork::None
             || write_busy
@@ -1471,18 +1486,20 @@ impl App {
                 };
             }
             SettingsItem::DlmmStrategy => {
-                self.dlmm_strategy = match self.dlmm_strategy.as_str() {
-                    "curve" => "bid-ask",
-                    "bid-ask" => "spot-tight",
-                    "spot-tight" => "spot-spread",
-                    "spot-spread" => "spot-wide",
-                    _ => "curve",
+                #[cfg(feature = "write")]
+                {
+                    let next =
+                        sol_clmm_manager::DlmmStrategy::from_setting(&self.dlmm_strategy).next();
+                    self.dlmm_strategy = next.setting_key().into();
+                    if let Some(store) = &self.store {
+                        let _ = store.set_dlmm_strategy(&self.dlmm_strategy);
+                    }
+                    self.status_line = format!("DLMM strategy → {}", self.dlmm_strategy);
                 }
-                .into();
-                if let Some(store) = &self.store {
-                    let _ = store.set_dlmm_strategy(&self.dlmm_strategy);
+                #[cfg(not(feature = "write"))]
+                {
+                    self.status_line = "DLMM strategy needs --features write".into();
                 }
-                self.status_line = format!("DLMM strategy → {}", self.dlmm_strategy);
             }
             SettingsItem::JupiterKey => {
                 self.api_key_target = ApiKeyTarget::Jupiter;
@@ -1721,6 +1738,10 @@ impl App {
                 self.bg_rx = None;
                 self.list_loading = false;
                 self.detail_loading = false;
+                #[cfg(feature = "write")]
+                {
+                    self.wallet_loading = false;
+                }
                 self.load_started = None;
                 #[cfg(feature = "write")]
                 if let Some(c) = self.write_confirm.as_mut()
@@ -1770,6 +1791,31 @@ impl App {
                     Err(e) => {
                         self.status_line =
                             format!("rpc error: {e:#} · press r to retry · q to quit");
+                    }
+                }
+            }
+            #[cfg(feature = "write")]
+            BgFetchResult::Wallet { result, meter } => {
+                self.rpc_meter.merge(&meter);
+                self.wallet_loading = false;
+                self.load_started = None;
+                if self.screen != Screen::Wallet {
+                    return;
+                }
+                match *result {
+                    Ok((sol, tokens)) => {
+                        let wiz = crate::wallet_flow::WalletWizard::new(
+                            sol,
+                            tokens,
+                            sol_clmm_manager::SOL_FEE_RESERVE_LAMPORTS,
+                        );
+                        self.status_line = wiz.status_hint();
+                        self.wallet_wiz = Some(wiz);
+                    }
+                    Err(e) => {
+                        self.wallet_wiz = None;
+                        self.status_line =
+                            format!("wallet balances: {e:#} · Esc back · w retry");
                     }
                 }
             }
@@ -2436,8 +2482,6 @@ impl App {
             ManageChoice::ClaimWithdraw => self.open_manage_withdraw(
                 crate::write_flow::WithdrawKind::ClaimWithdraw,
             ),
-            ManageChoice::WrapSol => self.open_manage_wrap(rpc),
-            ManageChoice::UnwrapSol => self.detail_write_op(rpc, choice),
             other => self.detail_write_op(rpc, other),
         }
     }
@@ -2490,20 +2534,340 @@ impl App {
     }
 
     #[cfg(feature = "write")]
-    fn open_manage_wrap(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
-        if self.detail.is_none() {
-            self.status_line = "no detail loaded".into();
+    pub fn open_wallet(&mut self, _rpc: &solana_client::rpc_client::RpcClient) {
+        if !self.writes_live() {
+            self.status_line = "wallet tools need write + keypair".into();
             return;
         }
-        let balances = self.refresh_wallet_balances_for_detail(rpc).or_else(|| {
-            self.detail
-                .as_ref()
-                .and_then(|d| d.wallet_balances.clone())
+        if self.wallet.is_none() {
+            self.status_line = "no wallet".into();
+            return;
+        }
+        if self.bg_rx.is_some() || self.pending != PendingWork::None {
+            self.status_line = "busy · wait for current fetch".into();
+            return;
+        }
+        self.wallet_wiz = None;
+        self.wallet_loading = true;
+        self.load_started = Some(Instant::now());
+        self.pending = PendingWork::Wallet;
+        self.screen = Screen::Wallet;
+        self.status_line = "wallet · loading balances… · Esc cancel".into();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn spawn_wallet_fetch(&mut self) {
+        if self.bg_rx.is_some() {
+            return;
+        }
+        let Some(owner) = self.wallet else {
+            self.wallet_loading = false;
+            self.load_started = None;
+            self.status_line = "no wallet".into();
+            return;
+        };
+        let rpc_url = self.rpc_url.clone();
+        let db_path = self.store.as_ref().map(|s| s.path().to_path_buf());
+        let (tx, rx) = mpsc::channel();
+        self.bg_rx = Some(rx);
+        self.wallet_loading = true;
+        self.load_started = Some(Instant::now());
+
+        thread::spawn(move || {
+            let sol = rpc::connect(&rpc_url);
+            let meter = RpcMeter::default();
+            let rpc = Rpc::new(&sol, &meter);
+            let store = db_path.and_then(|p| Store::open(&p, false).ok());
+            let result = sol_clmm_manager::fetch_wallet_token_balances(&rpc, &owner, store.as_ref());
+            let _ = tx.send(BgFetchResult::Wallet {
+                result: Box::new(result),
+                meter,
+            });
         });
-        let wiz = crate::write_flow::ManageWrapWizard::new(balances.as_ref());
-        self.status_line = wiz.status_hint();
-        self.manage_wrap = Some(wiz);
-        self.screen = Screen::ManageWrap;
+    }
+
+    #[cfg(feature = "write")]
+    pub fn cancel_wallet(&mut self) {
+        if self.wallet_loading || matches!(self.pending, PendingWork::Wallet) {
+            self.pending = PendingWork::None;
+            self.bg_rx = None;
+            self.wallet_loading = false;
+            self.load_started = None;
+        }
+        self.wallet_wiz = None;
+        self.screen = Screen::Positions;
+        self.status_line = self.positions_status_line();
+    }
+
+    #[cfg(feature = "write")]
+    pub fn wallet_enter(&mut self, rpc: &solana_client::rpc_client::RpcClient) {
+        let Some(wiz) = self.wallet_wiz.as_mut() else {
+            return;
+        };
+        // Nested wrap amount confirm
+        if wiz.wrap.is_some() {
+            self.wallet_wrap_submit();
+            return;
+        }
+        if let Some(swap) = wiz.swap.as_mut() {
+            match swap.enter_advance() {
+                Ok(Some(ready)) => {
+                    let router = ready.router.clone();
+                    self.swap_mode = router;
+                    self.wallet_swap_submit(rpc, ready);
+                }
+                Ok(None) => {
+                    self.status_line = swap.status_hint();
+                }
+                Err(e) => {
+                    swap.error = Some(e.clone());
+                    self.status_line = e;
+                }
+            }
+            return;
+        }
+        if let Some(cp) = wiz.create_pool.as_mut() {
+            match cp.enter_advance() {
+                Ok(Some(params)) => self.wallet_create_pool_submit(rpc, params),
+                Ok(None) => {
+                    self.status_line = cp.status_hint();
+                }
+                Err(e) => {
+                    cp.error = Some(e.clone());
+                    self.status_line = e;
+                }
+            }
+            return;
+        }
+        // Top menu
+        match wiz.menu() {
+            crate::wallet_flow::WalletMenu::Wrap => {
+                let bal = sol_clmm_manager::WalletPoolBalances {
+                    a: sol_clmm_manager::SideBalance {
+                        mint: sol_clmm_manager::wsol_mint(),
+                        ata_amount: wiz
+                            .tokens
+                            .iter()
+                            .find(|t| t.is_wsol)
+                            .map(|t| t.amount)
+                            .unwrap_or(0),
+                        is_wsol: true,
+                    },
+                    b: sol_clmm_manager::SideBalance {
+                        mint: solana_pubkey::Pubkey::default(),
+                        ata_amount: 0,
+                        is_wsol: false,
+                    },
+                    sol_lamports: wiz.sol_lamports,
+                    rent_reserve_lamports: wiz.rent_reserve,
+                };
+                wiz.wrap = Some(crate::write_flow::ManageWrapWizard::new(Some(&bal)));
+                self.status_line = "wrap SOL · type amount · Enter · Esc".into();
+            }
+            crate::wallet_flow::WalletMenu::Unwrap => {
+                self.wallet_unwrap_submit();
+            }
+            crate::wallet_flow::WalletMenu::Swap => {
+                let router = self.swap_mode.clone();
+                let sol = wiz.sol_lamports;
+                let rent = wiz.rent_reserve;
+                let tokens = wiz.tokens.clone();
+                wiz.swap = Some(crate::wallet_flow::SwapWizard::new(
+                    sol, &tokens, rent, router,
+                ));
+                self.status_line = "swap · pick FROM".into();
+            }
+            crate::wallet_flow::WalletMenu::CreatePool => {
+                let sol = wiz.sol_lamports;
+                let rent = wiz.rent_reserve;
+                let tokens = wiz.tokens.clone();
+                wiz.create_pool = Some(crate::wallet_flow::CreatePoolWizard::new(
+                    sol, &tokens, rent,
+                ));
+                self.status_line = "create pool · venue".into();
+            }
+        }
+    }
+
+    #[cfg(feature = "write")]
+    fn wallet_wrap_submit(&mut self) {
+        let Some(wiz) = self.wallet_wiz.as_ref() else {
+            return;
+        };
+        let Some(wrap) = wiz.wrap.as_ref() else {
+            return;
+        };
+        let lamports = match wrap.lamports() {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(w) = self.wallet_wiz.as_mut().and_then(|w| w.wrap.as_mut()) {
+                    w.error = Some(e.clone());
+                }
+                self.status_line = e;
+                return;
+            }
+        };
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "wrap needs keypair".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let plan = sol_clmm_manager::plan_wrap_sol(payer.pubkey(), lamports);
+        let tip = self.tip_lamports;
+        let confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.wallet_wiz = None;
+        self.screen = Screen::WriteConfirm;
+        self.status_line = "wrap · ↑↓ tip · Enter simulate".into();
+    }
+
+    #[cfg(feature = "write")]
+    fn wallet_unwrap_submit(&mut self) {
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "unwrap needs keypair".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let plan = sol_clmm_manager::plan_unwrap_sol(payer.pubkey());
+        let tip = self.tip_lamports;
+        let confirm =
+            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
+        self.confirm_scroll = 0;
+        self.write_confirm = Some(confirm);
+        self.wallet_wiz = None;
+        self.screen = Screen::WriteConfirm;
+        self.status_line = "unwrap · ↑↓ tip · Enter simulate".into();
+    }
+
+    #[cfg(feature = "write")]
+    fn wallet_swap_submit(
+        &mut self,
+        _rpc: &solana_client::rpc_client::RpcClient,
+        ready: crate::wallet_flow::SwapReady,
+    ) {
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "swap needs keypair".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let mut settings = self.write_settings_for_confirm(tip);
+        settings.swap_mode = Some(ready.router.clone());
+        self.swap_mode = ready.router.clone();
+        let client = Client::new(self.price_mode, self.price_keys());
+        match client.assemble_wallet_swap(
+            &settings,
+            payer.pubkey(),
+            ready.input_mint,
+            ready.output_mint,
+            ready.amount,
+            ready.slippage_bps,
+            ready.input_is_native_sol,
+        ) {
+            Ok((plan, tip_opt)) => {
+                let tip = tip_opt.unwrap_or(tip);
+                let mut confirm =
+                    crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, tip_opt);
+                // History Δ uses these mints (from → to). SOL/WSOL combines native+ATA.
+                confirm.attach_pool_context(
+                    None,
+                    None,
+                    &ready.input_symbol,
+                    &ready.output_symbol,
+                    &ready.input_mint,
+                    &ready.output_mint,
+                    ready.input_decimals,
+                    ready.output_decimals,
+                );
+                self.confirm_scroll = 0;
+                self.write_confirm = Some(confirm);
+                self.wallet_wiz = None;
+                self.screen = Screen::WriteConfirm;
+                self.status_line = "swap · ↑↓ tip · Enter simulate".into();
+            }
+            Err(e) => {
+                if let Some(w) = self.wallet_wiz.as_mut().and_then(|w| w.swap.as_mut()) {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("swap: {e}");
+            }
+        }
+    }
+
+    #[cfg(feature = "write")]
+    fn wallet_create_pool_submit(
+        &mut self,
+        rpc: &solana_client::rpc_client::RpcClient,
+        params: sol_clmm_manager::CreatePoolParams,
+    ) {
+        let path = match self.keypair_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_line = "create pool needs keypair".into();
+                return;
+            }
+        };
+        let payer = match read_keypair_file(&path) {
+            Ok(k) => k,
+            Err(e) => {
+                self.status_line = format!("keypair: {e}");
+                return;
+            }
+        };
+        let tip = self.tip_lamports;
+        let settings = self.write_settings_for_confirm(tip);
+        let client = Client::new(self.price_mode, self.price_keys());
+        match client.assemble_create_pool(rpc, payer.pubkey(), &params, &settings) {
+            Ok((plan, tip_opt, extra)) => {
+                let tip = tip_opt.unwrap_or(tip);
+                let confirm =
+                    crate::write_flow::WriteConfirm::with_tip(plan, extra, tip, tip_opt);
+                self.confirm_scroll = 0;
+                self.write_confirm = Some(confirm);
+                self.wallet_wiz = None;
+                self.screen = Screen::WriteConfirm;
+                self.status_line = "create pool · ↑↓ tip · Enter simulate".into();
+            }
+            Err(e) => {
+                if let Some(w) = self
+                    .wallet_wiz
+                    .as_mut()
+                    .and_then(|w| w.create_pool.as_mut())
+                {
+                    w.error = Some(e.to_string());
+                }
+                self.status_line = format!("create pool: {e}");
+            }
+        }
     }
 
     #[cfg(feature = "write")]
@@ -2736,53 +3100,6 @@ impl App {
     }
 
     #[cfg(feature = "write")]
-    pub fn manage_wrap_back(&mut self) {
-        self.manage_wrap = None;
-        self.screen = Screen::Manage;
-        self.status_line = "manage · ↑↓ · Enter · Esc · p pubkey".into();
-    }
-
-    #[cfg(feature = "write")]
-    pub fn manage_wrap_submit(&mut self) {
-        let lamports = match self.manage_wrap.as_ref().map(|w| w.lamports()) {
-            Some(Ok(v)) => v,
-            Some(Err(e)) => {
-                if let Some(w) = self.manage_wrap.as_mut() {
-                    w.error = Some(e);
-                }
-                return;
-            }
-            None => return,
-        };
-        let path = match self.keypair_path.as_ref() {
-            Some(p) => p.clone(),
-            None => {
-                self.status_line = "no keypair path".into();
-                return;
-            }
-        };
-        let payer = match read_keypair_file(&path) {
-            Ok(k) => k,
-            Err(e) => {
-                self.status_line = format!("keypair: {e}");
-                return;
-            }
-        };
-        let tip = self.tip_lamports;
-        let plan = sol_clmm_manager::plan_wrap_sol(payer.pubkey(), lamports);
-        let mut confirm =
-            crate::write_flow::WriteConfirm::with_tip(plan, Vec::new(), tip, None);
-        if let Some(d) = &self.detail {
-            Self::attach_confirm_from_detail(&mut confirm, d);
-        }
-        self.manage_wrap = None;
-        self.confirm_scroll = 0;
-        self.write_confirm = Some(confirm);
-        self.screen = Screen::WriteConfirm;
-        self.status_line = "wrap SOL · ↑↓ priority fee · Enter simulate".into();
-    }
-
-    #[cfg(feature = "write")]
     pub fn manage_deposit_back(&mut self) {
         let leave = self
             .manage_deposit
@@ -2935,13 +3252,11 @@ impl App {
         };
         let plan = match kind {
             ManageChoice::Deposit
-            | ManageChoice::WrapSol
             | ManageChoice::Compound
             | ManageChoice::Withdraw
             | ManageChoice::ClaimWithdraw => {
                 unreachable!("opens wizard");
             }
-            ManageChoice::UnwrapSol => Ok(sol_clmm_manager::plan_unwrap_sol(authority)),
             ManageChoice::Claim => client.plan_claim(authority, &detail),
             ManageChoice::Close => client.plan_close_and_claim(authority, &detail, sol_leg),
         };
@@ -3114,7 +3429,8 @@ impl App {
             .iter()
             .map(|k| k.to_bytes())
             .collect();
-        // Mints + labels for before/after wallet balance Δ (detail or create preview).
+        // Mints + labels for before/after wallet balance Δ
+        // (detail → create preview → confirm context, e.g. wallet swap from/to).
         // Owner = signer pubkey (not `self.wallet`, which can be unset).
         let bal_owner = read_keypair_file(&path)
             .ok()
@@ -3146,6 +3462,19 @@ impl App {
                         )
                     })
                 })
+            })
+            .or_else(|| {
+                let c = self.write_confirm.as_ref()?;
+                let ma = c.mint_a.as_ref()?.parse::<Pubkey>().ok()?;
+                let mb = c.mint_b.as_ref()?.parse::<Pubkey>().ok()?;
+                Some((
+                    Some(ma),
+                    Some(mb),
+                    c.symbol_a.clone(),
+                    c.symbol_b.clone(),
+                    c.decimals_a,
+                    c.decimals_b,
+                ))
             })
             .unwrap_or((None, None, None, None, None, None));
 

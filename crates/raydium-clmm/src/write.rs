@@ -4,8 +4,8 @@
 
 use anyhow::Result;
 use sol_clmm_manager::{
-    CreatePositionParams, ExpectedDeltas, PositionDetail, SolLegMode, WriteOp, WritePlan,
-    ensure_pool_atas_ixs, maybe_unwrap_after, maybe_wrap_before_deposit,
+    CreatePoolParams, CreatePositionParams, ExpectedDeltas, PositionDetail, SolLegMode, WriteOp,
+    WritePlan, ensure_pool_atas_ixs, maybe_unwrap_after, maybe_wrap_before_deposit,
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -60,15 +60,45 @@ fn metadata_program() -> Pubkey {
 }
 
 fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    ata_with_token_program(owner, mint, &token_program())
+}
+
+fn ata_token_2022(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    ata_with_token_program(owner, mint, &token_2022_program())
+}
+
+fn ata_with_token_program(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
-        &[owner.as_ref(), token_program().as_ref(), mint.as_ref()],
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
         &associated_token_program(),
     )
     .0
 }
 
+/// NFT ATA for an existing position — Token or Token-2022 from mint owner.
+fn nft_ata(owner: &Pubkey, mint: &Pubkey, detail: &PositionDetail) -> Pubkey {
+    let prog = detail
+        .position_nft_token_program
+        .unwrap_or_else(token_2022_program);
+    ata_with_token_program(owner, mint, &prog)
+}
+
+fn nft_token_program(detail: &PositionDetail) -> Pubkey {
+    detail
+        .position_nft_token_program
+        .unwrap_or_else(token_2022_program)
+}
+
 fn personal_position_pda(nft_mint: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"position", nft_mint.as_ref()], &program_id()).0
+}
+
+fn tick_array_bitmap_extension_pda(pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"pool_tick_array_bitmap_extension", pool.as_ref()],
+        &program_id(),
+    )
+    .0
 }
 
 fn protocol_position_pda(pool: &Pubkey, tick_lower: i32, tick_upper: i32) -> Pubkey {
@@ -104,7 +134,7 @@ fn decrease_accounts(
     nft_mint: Pubkey,
     detail: &PositionDetail,
 ) -> Vec<AccountMeta> {
-    let nft_account = ata(&nft_owner, &nft_mint);
+    let nft_account = nft_ata(&nft_owner, &nft_mint, detail);
     let personal = detail.row.address;
     let (tick_lo, tick_hi) = tick_arrays(
         &detail.pool.address,
@@ -134,8 +164,11 @@ fn decrease_accounts(
         AccountMeta::new_readonly(memo_program(), false),
         AccountMeta::new_readonly(detail.token_a.mint, false),
         AccountMeta::new_readonly(detail.token_b.mint, false),
-        // remaining: pool for frozen-NFT thaw compatibility
-        AccountMeta::new_readonly(detail.pool.address, false),
+        // remaining[0]: bitmap extension (required when range is outside inline bitmap)
+        AccountMeta::new(
+            tick_array_bitmap_extension_pda(&detail.pool.address),
+            false,
+        ),
     ]
 }
 
@@ -144,7 +177,7 @@ fn increase_accounts(
     nft_mint: Pubkey,
     detail: &PositionDetail,
 ) -> Vec<AccountMeta> {
-    let nft_account = ata(&nft_owner, &nft_mint);
+    let nft_account = nft_ata(&nft_owner, &nft_mint, detail);
     let (tick_lo, tick_hi) = tick_arrays(
         &detail.pool.address,
         detail.row.tick_lower,
@@ -172,6 +205,10 @@ fn increase_accounts(
         AccountMeta::new_readonly(token_2022_program(), false),
         AccountMeta::new_readonly(detail.token_a.mint, false),
         AccountMeta::new_readonly(detail.token_b.mint, false),
+        AccountMeta::new(
+            tick_array_bitmap_extension_pda(&detail.pool.address),
+            false,
+        ),
     ]
 }
 
@@ -223,8 +260,9 @@ pub fn close_position_ix(
     nft_mint: Pubkey,
     personal_position: Pubkey,
     pool: Pubkey,
+    nft_token_program: Pubkey,
 ) -> Instruction {
-    let nft_account = ata(&nft_owner, &nft_mint);
+    let nft_account = ata_with_token_program(&nft_owner, &nft_mint, &nft_token_program);
     Instruction {
         program_id: program_id(),
         accounts: vec![
@@ -233,7 +271,9 @@ pub fn close_position_ix(
             AccountMeta::new(nft_account, false),
             AccountMeta::new(personal_position, false),
             AccountMeta::new_readonly(system_program(), false),
-            AccountMeta::new_readonly(token_program(), false),
+            // TokenInterface — Token or Token-2022 matching the NFT mint owner.
+            AccountMeta::new_readonly(nft_token_program, false),
+            // remaining: pool for frozen-NFT thaw
             AccountMeta::new_readonly(pool, false),
         ],
         data: CLOSE_POSITION.to_vec(),
@@ -384,6 +424,7 @@ pub fn plan_close_and_claim(
         mint,
         detail.row.address,
         detail.pool.address,
+        nft_token_program(detail),
     ));
     ixs.extend(maybe_unwrap_after(
         sol_leg,
@@ -456,13 +497,15 @@ pub fn plan_create_funded(
     amount_1_max: u64,
 ) -> Result<WritePlan> {
     let personal = personal_position_pda(&position_nft_mint);
-    let nft_account = ata(&authority, &position_nft_mint);
+    // Our create path is OpenPositionWithToken22Nft → ATA must be Token-2022.
+    let nft_account = ata_token_2022(&authority, &position_nft_mint);
     let lower_start = tick_array_start_index(params.tick_lower, tick_spacing);
     let upper_start = tick_array_start_index(params.tick_upper, tick_spacing);
     let prog = program_id();
     let tick_lo = tick_array_pda(&params.pool, lower_start, &prog);
     let tick_hi = tick_array_pda(&params.pool, upper_start, &prog);
     let protocol = protocol_position_pda(&params.pool, params.tick_lower, params.tick_upper);
+    let bitmap_ext = tick_array_bitmap_extension_pda(&params.pool);
 
     let mut data = OPEN_POSITION_WITH_TOKEN22_NFT.to_vec();
     data.extend_from_slice(&params.tick_lower.to_le_bytes());
@@ -500,6 +543,8 @@ pub fn plan_create_funded(
             AccountMeta::new_readonly(token_2022_program(), false),
             AccountMeta::new_readonly(mint_a, false),
             AccountMeta::new_readonly(mint_b, false),
+            // remaining[0]: TickArrayBitmapExtension (needed outside ±512 arrays)
+            AccountMeta::new(bitmap_ext, false),
         ],
         data,
     });
@@ -533,4 +578,134 @@ pub fn plan_create_funded(
         },
         payer: authority,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nft_ata_uses_token_2022_not_legacy() {
+        let owner = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let legacy = ata(&owner, &mint);
+        let t22 = ata_token_2022(&owner, &mint);
+        assert_ne!(legacy, t22, "Token-2022 ATA must differ from Tokenkeg ATA");
+    }
+
+    #[test]
+    fn bitmap_extension_pda_for_known_pool() {
+        let pool = Pubkey::from_str("3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv").unwrap();
+        let pda = tick_array_bitmap_extension_pda(&pool);
+        assert_eq!(
+            pda.to_string(),
+            "4NFvUKqknMpoe6CWTzK758B8ojVLzURL5pC6MtiaJ8TQ"
+        );
+    }
+}
+
+const CREATE_POOL: [u8; 8] = [233, 146, 209, 142, 207, 104, 64, 188];
+
+fn amm_config_pda(index: u16) -> Pubkey {
+    Pubkey::find_program_address(&[b"amm_config", &index.to_be_bytes()], &program_id()).0
+}
+
+fn pool_state_pda(amm_config: &Pubkey, mint0: &Pubkey, mint1: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"pool", amm_config.as_ref(), mint0.as_ref(), mint1.as_ref()],
+        &program_id(),
+    )
+    .0
+}
+
+fn observation_pda(pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"observation", pool.as_ref()], &program_id()).0
+}
+
+fn tick_bitmap_ext_pda(pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"pool_tick_array_bitmap_extension", pool.as_ref()], &program_id())
+        .0
+}
+
+fn vault_pda(pool: &Pubkey, mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"pool_vault", pool.as_ref(), mint.as_ref()], &program_id()).0
+}
+
+fn price_to_sqrt_x64(human_b_per_a: f64, dec_a: u8, dec_b: u8) -> anyhow::Result<u128> {
+    anyhow::ensure!(human_b_per_a.is_finite() && human_b_per_a > 0.0, "initial price must be > 0");
+    let raw = human_b_per_a * 10f64.powi(i32::from(dec_b) - i32::from(dec_a));
+    let q = raw.sqrt() * ((1u128 << 64) as f64);
+    anyhow::ensure!(q.is_finite() && q > 0.0 && q < u128::MAX as f64, "sqrt_price overflow");
+    Ok(q as u128)
+}
+
+fn mint_token_program(mint: &Pubkey) -> Pubkey {
+    // Prefer Tokenkeg; Token-2022 mints still work if owner matches at runtime.
+    let _ = mint;
+    token_program()
+}
+
+/// Initialize a Raydium CLMM pool (pool-only). `fee_param` = amm_config index.
+pub fn plan_create_pool(
+    authority: Pubkey,
+    params: &CreatePoolParams,
+) -> anyhow::Result<WritePlan> {
+    use sol_clmm_manager::CreatePoolMode;
+    anyhow::ensure!(params.mint_a != params.mint_b, "mints must differ");
+    // Raydium requires mint_0 < mint_1.
+    let (mint0, mint1, ordered) = if params.mint_a.to_bytes() < params.mint_b.to_bytes() {
+        (params.mint_a, params.mint_b, true)
+    } else {
+        (params.mint_b, params.mint_a, false)
+    };
+    let sqrt = price_to_sqrt_x64(
+        if ordered {
+            params.initial_price
+        } else {
+            1.0 / params.initial_price
+        },
+        if ordered { params.decimals_a } else { params.decimals_b },
+        if ordered { params.decimals_b } else { params.decimals_a },
+    )?;
+    let open_time = 0u64;
+    let amm_config = amm_config_pda(params.fee_param);
+    let pool = pool_state_pda(&amm_config, &mint0, &mint1);
+    let mut data = Vec::with_capacity(8 + 16 + 8);
+    data.extend_from_slice(&CREATE_POOL);
+    data.extend_from_slice(&sqrt.to_le_bytes());
+    data.extend_from_slice(&open_time.to_le_bytes());
+    let ix = Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(amm_config, false),
+            AccountMeta::new(pool, false),
+            AccountMeta::new_readonly(mint0, false),
+            AccountMeta::new_readonly(mint1, false),
+            AccountMeta::new(vault_pda(&pool, &mint0), false),
+            AccountMeta::new(vault_pda(&pool, &mint1), false),
+            AccountMeta::new(observation_pda(&pool), false),
+            AccountMeta::new(tick_bitmap_ext_pda(&pool), false),
+            AccountMeta::new_readonly(mint_token_program(&mint0), false),
+            AccountMeta::new_readonly(mint_token_program(&mint1), false),
+            AccountMeta::new_readonly(system_program(), false),
+        ],
+        data,
+    };
+    let mode_note = match params.mode {
+        CreatePoolMode::PoolOnly => "pool only".into(),
+        _ => format!("{} · after land use n create on {pool}", params.mode.label()),
+    };
+    Ok(WritePlan {
+            op: WriteOp::CreatePool,
+            venue_label: "Raydium CLMM".into(),
+            summary: format!("create clmm pool · config {} · {mode_note}", params.fee_param),
+            instructions: vec![ix],
+            follow_up: None,
+            expected: ExpectedDeltas {
+                note: format!("new pool {pool}"),
+                ..Default::default()
+            },
+            payer: authority,
+        })
 }

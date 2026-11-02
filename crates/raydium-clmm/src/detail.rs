@@ -353,10 +353,17 @@ pub fn fetch_position_detail(
         .map(|(i, r)| (i as u8, r.token_mint, r.token_vault))
         .collect();
 
+    // Legacy OpenPosition/V2 → Tokenkeg; OpenPositionWithToken22Nft → Token-2022.
+    let position_nft_token_program = rpc
+        .get_account(&position.nft_mint)
+        .ok()
+        .map(|a| a.owner);
+
     Ok(PositionDetail {
         row: row.clone(),
         pool,
         position_mint: Some(position.nft_mint),
+        position_nft_token_program,
         reward_vaults,
         token_a: token_a.clone(),
         token_b: token_b.clone(),

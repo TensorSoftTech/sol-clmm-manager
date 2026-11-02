@@ -14,6 +14,10 @@ pub const USDY: &str = "A1KLoBrKBde8Ty9qtNQUtq3C2ortoC3u7twggz7sEto6";
 /// Ethena USDe
 pub const USDE: &str = "DEkqHyPN7GFyrVFbDp3Sy3PfX7pPDixE9eUV2oc8agnF";
 pub const WSOL: &str = "So11111111111111111111111111111111111111112";
+/// Jupiter USD (jupUSD)
+pub const JUPUSD: &str = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD";
+/// Jupiter governance token
+pub const JUP: &str = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN";
 
 /// Tick spacings to probe when looking for a token/stable Whirlpool.
 pub const PRICE_TICK_SPACINGS: &[u16] = &[1, 2, 4, 8, 16, 64, 96, 128, 256];
@@ -33,7 +37,7 @@ pub const METEORA_BASE_FACTORS: &[u16] = &[10_000, 5_000, 2_000, 1_000, 500];
 pub fn stablecoin_mints() -> &'static [Pubkey] {
     static MINTS: OnceLock<Vec<Pubkey>> = OnceLock::new();
     MINTS.get_or_init(|| {
-        [USDC, USDT, PYUSD, USDY, USDE]
+        [USDC, USDT, PYUSD, USDY, USDE, JUPUSD]
             .into_iter()
             .filter_map(|s| Pubkey::from_str(s).ok())
             .collect()
@@ -42,6 +46,26 @@ pub fn stablecoin_mints() -> &'static [Pubkey] {
 
 pub fn is_stablecoin(mint: &Pubkey) -> bool {
     stablecoin_mints().iter().any(|s| s == mint)
+}
+
+/// Curated swap / create-pool mint picker (mainnet) — SOL first, then stables + JUP.
+pub fn popular_swap_mints() -> &'static [(Pubkey, &'static str)] {
+    static LIST: OnceLock<Vec<(Pubkey, &'static str)>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        [
+            (WSOL, "SOL"),
+            (USDC, "USDC"),
+            (USDT, "USDT"),
+            (JUPUSD, "jupUSD"),
+            (JUP, "JUP"),
+            (PYUSD, "PYUSD"),
+            (USDE, "USDe"),
+        ]
+        .into_iter()
+        .filter_map(|(m, s)| Pubkey::from_str(m).ok().map(|pk| (pk, s)))
+        .collect()
+    })
+    .as_slice()
 }
 
 pub fn whirlpools_config() -> Pubkey {

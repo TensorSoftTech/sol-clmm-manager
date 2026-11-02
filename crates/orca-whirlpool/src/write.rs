@@ -4,8 +4,8 @@
 
 use anyhow::Result;
 use sol_clmm_manager::{
-    CreatePositionParams, ExpectedDeltas, PositionDetail, SolLegMode, WriteOp, WritePlan,
-    ensure_atas_ixs, maybe_unwrap_after, maybe_wrap_before_deposit,
+    CreatePoolParams, CreatePositionParams, ExpectedDeltas, PositionDetail, SolLegMode, WriteOp,
+    WritePlan, ensure_atas_ixs, maybe_unwrap_after, maybe_wrap_before_deposit,
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -699,4 +699,111 @@ pub fn plan_create_funded(
 #[allow(dead_code)]
 fn _position_pda_export(mint: &Pubkey) -> Pubkey {
     position_pda(mint)
+}
+
+const INITIALIZE_POOL: [u8; 8] = [95, 180, 10, 172, 84, 174, 232, 40];
+
+fn fee_tier_pda(config: &Pubkey, tick_spacing: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"fee_tier", config.as_ref(), &tick_spacing.to_le_bytes()],
+        &program_id(),
+    )
+    .0
+}
+
+fn whirlpool_pda(config: &Pubkey, mint_a: &Pubkey, mint_b: &Pubkey, tick_spacing: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"whirlpool",
+            config.as_ref(),
+            mint_a.as_ref(),
+            mint_b.as_ref(),
+            &tick_spacing.to_le_bytes(),
+        ],
+        &program_id(),
+    )
+    .0
+}
+
+fn price_to_sqrt_x64(human_b_per_a: f64, dec_a: u8, dec_b: u8) -> anyhow::Result<u128> {
+    anyhow::ensure!(human_b_per_a.is_finite() && human_b_per_a > 0.0, "initial price must be > 0");
+    let scale = 10f64.powi(i32::from(dec_b) - i32::from(dec_a));
+    let raw = human_b_per_a * scale;
+    anyhow::ensure!(raw.is_finite() && raw > 0.0, "raw price invalid");
+    let sqrt = raw.sqrt();
+    let q = sqrt * ((1u128 << 64) as f64);
+    anyhow::ensure!(q.is_finite() && q > 0.0 && q < u128::MAX as f64, "sqrt_price overflow");
+    Ok(q as u128)
+}
+
+/// Initialize an Orca whirlpool (pool-only). `vault_a`/`vault_b` must sign.
+pub fn plan_create_pool(
+    authority: Pubkey,
+    params: &CreatePoolParams,
+    vault_a: Pubkey,
+    vault_b: Pubkey,
+) -> anyhow::Result<WritePlan> {
+    use sol_clmm_manager::{CreatePoolMode, WHIRLPOOLS_CONFIG};
+    anyhow::ensure!(params.mint_a != params.mint_b, "mints must differ");
+    let config = Pubkey::from_str(WHIRLPOOLS_CONFIG).expect("config");
+    let tick_spacing = params.fee_param.max(1);
+    let (mint_a, mint_b, ordered) = if params.mint_a.to_bytes() < params.mint_b.to_bytes() {
+        (params.mint_a, params.mint_b, true)
+    } else {
+        (params.mint_b, params.mint_a, false)
+    };
+    let price = if ordered {
+        params.initial_price
+    } else if params.initial_price > 0.0 {
+        1.0 / params.initial_price
+    } else {
+        anyhow::bail!("initial price must be > 0");
+    };
+    let sqrt = price_to_sqrt_x64(
+        price,
+        if ordered { params.decimals_a } else { params.decimals_b },
+        if ordered { params.decimals_b } else { params.decimals_a },
+    )?;
+    let fee_tier = fee_tier_pda(&config, tick_spacing);
+    let pool = whirlpool_pda(&config, &mint_a, &mint_b, tick_spacing);
+    let mut data = Vec::with_capacity(8 + 1 + 2 + 16);
+    data.extend_from_slice(&INITIALIZE_POOL);
+    data.push(0);
+    data.extend_from_slice(&tick_spacing.to_le_bytes());
+    data.extend_from_slice(&sqrt.to_le_bytes());
+    let ix = Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new_readonly(mint_a, false),
+            AccountMeta::new_readonly(mint_b, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new(pool, false),
+            AccountMeta::new(vault_a, true),
+            AccountMeta::new(vault_b, true),
+            AccountMeta::new_readonly(fee_tier, false),
+            AccountMeta::new_readonly(token_program(), false),
+            AccountMeta::new_readonly(system_program(), false),
+            AccountMeta::new_readonly(rent_sysvar(), false),
+        ],
+        data,
+    };
+    let mode_note = match params.mode {
+        CreatePoolMode::PoolOnly => "pool only".to_string(),
+        CreatePoolMode::PoolDeposit | CreatePoolMode::PoolDepositSwap => {
+            format!("{} · after land use n create on pool {pool}", params.mode.label())
+        }
+    };
+    Ok(WritePlan {
+        op: WriteOp::CreatePool,
+        venue_label: "Orca Whirlpool".into(),
+        summary: format!("create whirlpool · spacing {tick_spacing} · {mode_note}"),
+        instructions: vec![ix],
+        follow_up: None,
+        expected: ExpectedDeltas {
+            note: format!("new pool {pool}"),
+            ..Default::default()
+        },
+        payer: authority,
+    })
 }
