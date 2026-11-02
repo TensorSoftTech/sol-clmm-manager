@@ -1261,7 +1261,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  w            wallet tools (write) · wrap / unwrap / swap / create pool",
+        "  w            wallet (write) · load bar → wrap / unwrap / swap / create pool",
     );
     push(
         &mut out,
@@ -1305,6 +1305,11 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
         &mut out,
         HelpStyle::Key,
         "  0            fit chart to position range",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  m            manage (write) · deposit / compound / claim / withdraw / close",
     );
     push(&mut out, HelpStyle::Key, "  Esc / q      back to list");
     push(
@@ -1372,7 +1377,12 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  Claim / deposit / withdraw / close / create + SOL wrap are good as a POC.",
+        "  Smoke so far: open on Raydium + Meteora · SOL/USDC only. Other pools / create still TBD.",
+    );
+    push(
+        &mut out,
+        HelpStyle::Key,
+        "  Claim / deposit / withdraw / close / create + wallet wrap are POC · prefer no-swap.",
     );
     push(
         &mut out,
@@ -1387,7 +1397,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Key,
-        "  P2: history (y) shows SOL + token Δ · richer plan inputs still TODO.",
+        "  P2: history (y) · pool ATA Δ + wallet swap from→to · richer plan notes still TODO.",
     );
     push(
         &mut out,
@@ -1428,7 +1438,7 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  Detail: m manage → action → ↑↓ tip → Enter sim → Enter send. Tx saved in sqlite.",
+        "  Detail: m manage → deposit/compound/claim/withdraw/close (wrap lives under w).",
     );
     push(
         &mut out,
@@ -1438,7 +1448,12 @@ fn help_lines() -> Vec<(HelpStyle, String)> {
     push(
         &mut out,
         HelpStyle::Body,
-        "  Wallet: w · wrap/unwrap SOL · Jupiter/Titan swap · create pool (Orca/Raydium; Meteora stub).",
+        "  Wallet: w · load bar → wrap/unwrap · Jupiter/Titan swap · create pool (Meteora stub).",
+    );
+    push(
+        &mut out,
+        HelpStyle::Body,
+        "  History Δ: wallet swap shows from→to (e.g. USDC − · SOL +); Esc cancels load.",
     );
     push(
         &mut out,
