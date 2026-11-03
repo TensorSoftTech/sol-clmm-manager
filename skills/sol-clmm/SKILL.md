@@ -45,4 +45,7 @@ Open position briefly tested on **Raydium + Meteora SOL/USDC** only. Other pools
 - `sol-clmm-core` / `sol-clmm-quotes` split
 - `sol-clmm-agent` binary
 
-See also: `skills/sol-clmm-read`, `skills/sol-clmm-pricing`, `skills/sol-clmm-write`.
+See also:
+
+- `skills/sol-clmm-read` · `skills/sol-clmm-pricing` · `skills/sol-clmm-write`
+- Protocol byte maps / IX accounts: `skills/orca-whirlpool-protocol` · `skills/raydium-clmm-protocol` · `skills/meteora-dlmm-protocol`

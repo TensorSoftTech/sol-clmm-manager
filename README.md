@@ -61,7 +61,7 @@ sol-clmm-manager/          # this repo (Cargo workspace)
 │   ├── raydium-clmm/      # Raydium CLMM protocol lib
 │   ├── meteora-dlmm/      # Meteora DLMM protocol lib
 │   └── sol-clmm-tui/      # TUI binary (ratatui)
-├── skills/                # Cursor agent skills (sol-clmm · read · pricing · write)
+├── skills/                # Cursor agent skills (sol-clmm · read · pricing · write · venue protocol)
 ├── docs/images/           # README screenshots
 ├── Cargo.toml
 └── README.md
@@ -307,7 +307,7 @@ List merges Orca + Raydium + Meteora; **`v`** filters. Fees on the list are **cl
 
 ## Library reuse (agent path)
 
-Prefer **`sol-clmm-client`** so you do not re-copy multi-venue wiring. Cursor skills: [`skills/sol-clmm`](skills/sol-clmm/SKILL.md), [`skills/sol-clmm-read`](skills/sol-clmm-read/SKILL.md), [`skills/sol-clmm-pricing`](skills/sol-clmm-pricing/SKILL.md), [`skills/sol-clmm-write`](skills/sol-clmm-write/SKILL.md).
+Prefer **`sol-clmm-client`** so you do not re-copy multi-venue wiring. Cursor skills: [`skills/sol-clmm`](skills/sol-clmm/SKILL.md), [`skills/sol-clmm-read`](skills/sol-clmm-read/SKILL.md), [`skills/sol-clmm-pricing`](skills/sol-clmm-pricing/SKILL.md), [`skills/sol-clmm-write`](skills/sol-clmm-write/SKILL.md). Venue account/IX byte maps: [`orca-whirlpool-protocol`](skills/orca-whirlpool-protocol/SKILL.md), [`raydium-clmm-protocol`](skills/raydium-clmm-protocol/SKILL.md), [`meteora-dlmm-protocol`](skills/meteora-dlmm-protocol/SKILL.md).
 
 ```rust
 use sol_clmm_client::Client;
