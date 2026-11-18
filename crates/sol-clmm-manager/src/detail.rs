@@ -3,6 +3,7 @@
 use crate::pool::PoolStats;
 use crate::position::PositionRow;
 use crate::pricing::UsdEstimate;
+use crate::quotes::tensorsoft::PoolMarketStats;
 use crate::snapshots::PoolPeriodReport;
 use crate::tokens::TokenInfo;
 use crate::venue::Venue;
@@ -83,6 +84,8 @@ pub struct PositionDetail {
     pub vault_b_ui: String,
     /// Pool fee/volume estimate since previous SQLite snapshot (if any).
     pub period: Option<PoolPeriodReport>,
+    /// TensorSoft data-api market overlay (TVL / 24h volume / APR). Soft-fail.
+    pub market: Option<PoolMarketStats>,
     /// Wallet ATA + native SOL for this pool's mints (refreshed with detail).
     /// Critical for SOL pairs: wrap/unwrap changes native vs WSOL split.
     pub wallet_balances: Option<WalletPoolBalances>,

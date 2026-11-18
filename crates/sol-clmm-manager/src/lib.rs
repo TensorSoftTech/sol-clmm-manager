@@ -7,7 +7,7 @@
 //! - [`store`] — SQLite settings + token metadata cache
 //! - [`tokens`] — symbol / decimals resolution (known · Metaplex · Jupiter Tokens)
 //! - [`stables`] — common mint constants
-//! - [`quotes`] — Jupiter Price + Titan Portal HTTP helpers
+//! - [`quotes`] — Jupiter Price + Titan Portal + TensorSoft pools HTTP helpers
 
 #![forbid(unsafe_code)]
 
@@ -51,6 +51,10 @@ pub use pricing::{
 };
 pub use quotes::{
     jupiter::{self, TokenMeta, fetch_token_meta, fetch_usd_prices as jupiter_usd_prices},
+    tensorsoft::{
+        self, HistoryBucket, HistoryRange, LatestPoolsQuery, PoolMarket, PoolMarketStats,
+        PoolPoint, fetch_pool_history, fetch_pools_latest, try_pool_market_stats,
+    },
     titan::{self, TITAN_PORTAL_QUOTE, fetch_usd_prices_with_tier as titan_usd_prices},
 };
 pub use rpc::{

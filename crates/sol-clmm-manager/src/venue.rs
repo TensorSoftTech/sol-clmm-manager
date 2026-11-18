@@ -43,6 +43,15 @@ impl Venue {
     pub fn full(self) -> String {
         format!("{} {}", self.brand(), self.product())
     }
+
+    /// TensorSoft data-api `platform` id (`orca` · `raydium` · `meteora_dlmm`).
+    pub fn data_api_platform(self) -> &'static str {
+        match self {
+            Self::OrcaWhirlpool => "orca",
+            Self::RaydiumClmm => "raydium",
+            Self::MeteoraDlmm => "meteora_dlmm",
+        }
+    }
 }
 
 /// TUI / agent filter: all venues, or one venue at a time (`v` cycles in the TUI).
@@ -100,6 +109,9 @@ mod tests {
         assert_eq!(Venue::RaydiumClmm.full(), "Raydium CLMM");
         assert_eq!(Venue::MeteoraDlmm.full(), "Meteora DLMM");
         assert_eq!(Venue::OrcaWhirlpool.short(), "orca");
+        assert_eq!(Venue::OrcaWhirlpool.data_api_platform(), "orca");
+        assert_eq!(Venue::RaydiumClmm.data_api_platform(), "raydium");
+        assert_eq!(Venue::MeteoraDlmm.data_api_platform(), "meteora_dlmm");
     }
 
     #[test]

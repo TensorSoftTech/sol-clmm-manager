@@ -71,7 +71,7 @@ impl RpcCall {
     }
 }
 
-/// Session-scoped call counter + ring history (Solana RPC + Jupiter/Titan HTTPS).
+/// Session-scoped call counter + ring history (Solana RPC + Jupiter/Titan/TensorSoft HTTPS).
 #[derive(Debug, Default)]
 pub struct RpcMeter {
     inner: RefCell<RpcMeterInner>,
@@ -83,6 +83,7 @@ struct RpcMeterInner {
     solana: u64,
     jupiter: u64,
     titan: u64,
+    tensorsoft: u64,
     history: VecDeque<RpcCall>,
 }
 
@@ -94,6 +95,8 @@ impl RpcMeter {
             g.jupiter = g.jupiter.saturating_add(1);
         } else if method.starts_with("titan.") {
             g.titan = g.titan.saturating_add(1);
+        } else if method.starts_with("tensorsoft.") {
+            g.tensorsoft = g.tensorsoft.saturating_add(1);
         } else {
             g.solana = g.solana.saturating_add(1);
         }
@@ -111,9 +114,10 @@ impl RpcMeter {
         self.inner.borrow().total
     }
 
-    pub fn counts(&self) -> (u64, u64, u64, u64) {
+    /// `(total, solana, jupiter, titan, tensorsoft)`.
+    pub fn counts(&self) -> (u64, u64, u64, u64, u64) {
         let g = self.inner.borrow();
-        (g.total, g.solana, g.jupiter, g.titan)
+        (g.total, g.solana, g.jupiter, g.titan, g.tensorsoft)
     }
 
     pub fn history(&self) -> Vec<RpcCall> {
@@ -128,6 +132,7 @@ impl RpcMeter {
         g.solana = g.solana.saturating_add(o.solana);
         g.jupiter = g.jupiter.saturating_add(o.jupiter);
         g.titan = g.titan.saturating_add(o.titan);
+        g.tensorsoft = g.tensorsoft.saturating_add(o.tensorsoft);
         for c in &o.history {
             if g.history.len() >= RPC_HISTORY_CAP {
                 g.history.pop_front();
@@ -138,8 +143,10 @@ impl RpcMeter {
 
     /// Panel title: totals broken down by backend.
     pub fn footer_title(&self) -> String {
-        let (total, sol, jup, titan) = self.counts();
-        format!(" calls · {total} · sol×{sol} · jupiter×{jup} · titan×{titan} ")
+        let (total, sol, jup, titan, ts) = self.counts();
+        format!(
+            " calls · {total} · sol×{sol} · jupiter×{jup} · titan×{titan} · tensorsoft×{ts} "
+        )
     }
 
     /// Compact one-line summary for the footer (newest last).
@@ -354,9 +361,11 @@ mod tests {
         assert!(line.contains('…') || line.len() <= 80);
         m.record("jupiter.price", "n=2", true);
         m.record("titan.quote", "mint", true);
-        let (_, sol, jup, titan) = m.counts();
+        m.record("tensorsoft.pools.history", "orca", true);
+        let (_, sol, jup, titan, ts) = m.counts();
         assert_eq!(sol, 70);
         assert_eq!(jup, 1);
         assert_eq!(titan, 1);
+        assert_eq!(ts, 1);
     }
 }

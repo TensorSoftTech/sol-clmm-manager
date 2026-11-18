@@ -82,7 +82,7 @@ Protocol crates do **not** depend on the TUI. Agents should use **`sol-clmm-clie
 
 | Crate | Type | Responsibility |
 |-------|------|----------------|
-| `sol-clmm-manager` | lib | RPC meter, SQLite, Jupiter/Titan quotes, **`Venue`**, fees/enrich/snapshots, **on-chain USD hops** (Orca + Raydium PDAs → Meteora LbPair) |
+| `sol-clmm-manager` | lib | RPC meter, SQLite, Jupiter/Titan quotes, **TensorSoft pools** (TVL/volume/APR), **`Venue`**, fees/enrich/snapshots, **on-chain USD hops** (Orca + Raydium PDAs → Meteora LbPair) |
 | `sol-clmm-client` | lib | **Agent/TUI API** — multi-venue `Client` (`list_positions` · `position_detail` · enrich) |
 | `orca-whirlpool` | lib | Whirlpool decode, list, detail, amounts-from-L, chart series · rows tagged `Venue::OrcaWhirlpool` |
 | `raydium-clmm` | lib | CLMM list/detail/amounts/chart/≈USD · NFT → PDA · `Venue::RaydiumClmm` |
@@ -98,12 +98,13 @@ Pre-alpha. **Reads** solid across venues. **Writes are a solid POC** (burner / d
 ### Done
 
 - [x] Cargo **workspace** · 5 crates (`solana-client =4.4.0`, tx v1–ready)
-- [x] Shared manager lib (RPC meter · SQLite · tokens · Jupiter/Titan)
+- [x] Shared manager lib (RPC meter · SQLite · tokens · Jupiter/Titan · TensorSoft pools)
 - [x] Orca Whirlpools lib (list · detail · DynamicTickArray · ≈ USD · symbols)
 - [x] Raydium CLMM list / detail / amounts / chart / ≈ USD
 - [x] Meteora DLMM list / detail / amounts / chart / ≈ USD
 - [x] Ratatui TUI (`sol-clmm-tui`) — privacy trim, price modes, refresh load bar in-panel
-- [x] Footer: session call counts (**sol / jupiter / titan**) + **SQLite DB size**
+- [x] Footer: session call counts (**sol / jupiter / titan / tensorsoft**) + **SQLite DB size**
+- [x] **TensorSoft data-api** (free tier, no key) — detail overlays pool TVL · 24h volume · APR; SQLite snapshots remain as fallback
 - [x] Position **venue** tag (`Orca Whirlpool` / `Raydium CLMM` / `Meteora DLMM`) on list + detail
 - [x] Venue filter (`v`) across all three venues
 - [x] MIT + unofficial / risk notes
@@ -177,9 +178,11 @@ Balances show **SOL** (native + any remaining wrapped). Claiming or withdrawing 
 - when opening **Wallet (`w`)** (async load bar)
 - **immediately after every landed tx** (fees + wrap/unwrap always move SOL)
 
-### Pool report via on-chain snapshots (SQLite deltas)
+### Pool market (TensorSoft) + local snapshots
 
-Pools do **not** store rolling “24h volume”. We persist a snapshot on every **list/detail** refresh (unique pool), keep up to **64** points per pool, then sum **every consecutive segment** — not just last→current (two points alone are often too short / noisy).
+**Primary on detail:** [TensorSoft data-api](https://api.tensorsoft.tech/swagger-ui/) `GET /api/v1/pools/history` (free tier, **no API key** — ~1 rps / ~2500 calls/mo). Soft-fail overlay for Solana `orca` / `raydium` / `meteora_dlmm`: **TVL · 24h volume · APR**. Docs: OpenAPI at `/api-docs/openapi.json`. Metered as `tensorsoft.pools.*` in the footer.
+
+**Fallback:** on-chain SQLite snapshots. Pools do **not** store rolling “24h volume” on-chain. We persist a snapshot on every **list/detail** refresh (unique pool), keep up to **64** points per pool, then sum **every consecutive segment** — not just last→current (two points alone are often too short / noisy).
 
 **On each list/detail refresh (per pool pubkey), write something like:**
 
@@ -201,9 +204,7 @@ Pools do **not** store rolling “24h volume”. We persist a snapshot on every 
 - **≈24h** = window volume × `86400 / dt` when the retained span has length
 - **TVL / depth** from vault + price snapshots (already useful without growth)
 
-**Where it lives:** `sol-clmm-manager` SQLite (same DB as settings/token cache) · protocol crates supply the decoded snapshot · TUI upserts on list/`r` and detail.
-
-**Not a substitute for a swap indexer** when you need exact volume; good enough for a local “since first retained snap / across refreshes” pool report without HTTPS analytics.
+**Where it lives:** `sol-clmm-manager` SQLite (same DB as settings/token cache) · protocol crates supply the decoded snapshot · TUI upserts on list/`r` and detail. TensorSoft HTTP lives in `quotes/tensorsoft.rs`.
 
 ## Stack
 
@@ -273,6 +274,7 @@ If you still have an old `~/.config/whirpool-terminal/whirpool.db`, pass `--db` 
 | `--keypair` | `KEYPAIR` | JSON keypair **path** (path may be saved in SQLite; never key bytes) |
 | `--db` | `SOL_CLMM_DB` | SQLite path |
 | | `JUPITER_API_KEY` / `TITAN_API_KEY` | optional quote keys |
+| | *(none)* | TensorSoft pools: free tier, unauthenticated |
 
 ### Screens & keys
 

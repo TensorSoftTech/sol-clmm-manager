@@ -339,6 +339,9 @@ pub fn fetch_position_detail(
         None
     };
 
+    let market =
+        sol_clmm_manager::try_pool_market_stats(Venue::RaydiumClmm, &row.pool, Some(rpc.meter()));
+
     // Claimable only: actively emitting (in schedule), or ended with owed > 0.
     let reward_vaults: Vec<(u8, Pubkey, Pubkey)> = header
         .reward_infos
@@ -430,6 +433,7 @@ pub fn fetch_position_detail(
             })
             .unwrap_or_else(|| "—".into()),
         period,
+        market,
         wallet_balances: None,
     })
 }

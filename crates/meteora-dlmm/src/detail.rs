@@ -258,6 +258,9 @@ pub fn fetch_position_detail(
         None
     };
 
+    let market =
+        sol_clmm_manager::try_pool_market_stats(Venue::MeteoraDlmm, &row.pool, Some(rpc.meter()));
+
     Ok(PositionDetail {
         row: row.clone(),
         pool,
@@ -337,6 +340,7 @@ pub fn fetch_position_detail(
             })
             .unwrap_or_else(|| "—".into()),
         period,
+        market,
         wallet_balances: None,
     })
 }

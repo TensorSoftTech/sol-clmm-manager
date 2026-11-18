@@ -1725,55 +1725,120 @@ fn draw_detail(frame: &mut Frame, app: &mut App) {
             }
         }),
         Line::from({
-            match &d.usd {
-                Some(u) => vec![
+            if let Some(m) = d.market.as_ref().filter(|m| m.tvl_usd.is_some()) {
+                let mut spans = vec![
                     Span::styled("≈ pool TVL ", theme::header_key()),
-                    Span::styled(format_usd(u.pool_tvl_usd), theme::ok()),
-                    Span::styled(
+                    Span::styled(format_usd(m.tvl_usd), theme::ok()),
+                    Span::styled(format!("  · {}", m.source), theme::dim()),
+                ];
+                if let Some(u) = &d.usd {
+                    spans.push(Span::styled(
                         format!(
-                            "  = vault {} + {}",
+                            "  · vault {} + {}",
                             format_usd(u.pool_vault_a_usd),
                             format_usd(u.pool_vault_b_usd),
                         ),
                         theme::muted(),
-                    ),
-                ],
-                None => vec![
-                    Span::styled("≈ pool TVL ", theme::header_key()),
-                    Span::styled("—", theme::dim()),
-                ],
+                    ));
+                }
+                spans
+            } else {
+                match &d.usd {
+                    Some(u) => vec![
+                        Span::styled("≈ pool TVL ", theme::header_key()),
+                        Span::styled(format_usd(u.pool_tvl_usd), theme::ok()),
+                        Span::styled(
+                            format!(
+                                "  = vault {} + {}",
+                                format_usd(u.pool_vault_a_usd),
+                                format_usd(u.pool_vault_b_usd),
+                            ),
+                            theme::muted(),
+                        ),
+                    ],
+                    None => vec![
+                        Span::styled("≈ pool TVL ", theme::header_key()),
+                        Span::styled("—", theme::dim()),
+                    ],
+                }
             }
         }),
         Line::from({
-            match &d.period {
-                Some(p) => {
-                    let mut spans = vec![
-                        Span::styled("≈ volume ", theme::header_key()),
-                        Span::styled(format_usd(p.volume_usd), theme::ok()),
-                    ];
-                    if let Some(v24) = p.volume_usd_24h {
-                        spans.push(Span::styled(
-                            format!("  · ≈24h {}", format_usd(Some(v24))),
-                            theme::muted(),
-                        ));
-                    }
+            if let Some(m) = d
+                .market
+                .as_ref()
+                .filter(|m| m.volume_24h_usd.is_some() || m.apr_total.is_some())
+            {
+                let mut spans = vec![
+                    Span::styled("≈ volume ", theme::header_key()),
+                    Span::styled(
+                        format_usd(m.volume_24h_usd),
+                        theme::ok(),
+                    ),
+                ];
+                if m.volume_24h_usd.is_some() {
+                    spans.push(Span::styled(" 24h", theme::muted()));
+                }
+                if let Some(apr) = m.apr_total {
                     spans.push(Span::styled(
-                        format!(
-                            "  · fees {} + {} · {}",
-                            p.fees_a_ui, p.fees_b_ui, p.volume_note
-                        ),
+                        format!("  · APR {apr:.2}%"),
+                        theme::ok(),
+                    ));
+                }
+                if let Some(fee) = m.fee_apr {
+                    spans.push(Span::styled(
+                        format!("  · fee {fee:.2}%"),
+                        theme::muted(),
+                    ));
+                }
+                if let Some(rew) = m.reward_apr {
+                    spans.push(Span::styled(
+                        format!("  · reward {rew:.2}%"),
+                        theme::muted(),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("  · {}", m.source),
+                    theme::dim(),
+                ));
+                if let Some(p) = &d.period {
+                    spans.push(Span::styled(
+                        format!("  · local {}", p.volume_note),
                         theme::dim(),
                     ));
-                    spans
                 }
-                None => vec![
-                    Span::styled("≈ volume ", theme::header_key()),
-                    Span::styled("—", theme::dim()),
-                    Span::styled(
-                        "  · need ≥2 snapshots · r on list / reopen detail builds the chain",
-                        theme::dim(),
-                    ),
-                ],
+                spans
+            } else {
+                match &d.period {
+                    Some(p) => {
+                        let mut spans = vec![
+                            Span::styled("≈ volume ", theme::header_key()),
+                            Span::styled(format_usd(p.volume_usd), theme::ok()),
+                        ];
+                        if let Some(v24) = p.volume_usd_24h {
+                            spans.push(Span::styled(
+                                format!("  · ≈24h {}", format_usd(Some(v24))),
+                                theme::muted(),
+                            ));
+                        }
+                        spans.push(Span::styled(
+                            format!(
+                                "  · fees {} + {} · {}",
+                                p.fees_a_ui, p.fees_b_ui, p.volume_note
+                            ),
+                            theme::dim(),
+                        ));
+                        spans
+                    }
+                    None => vec![
+                        Span::styled("≈ volume ", theme::header_key()),
+                        Span::styled("—", theme::dim()),
+                        Span::styled(
+                            "  · need ≥2 snapshots · r on list / reopen detail builds the chain",
+                            theme::dim(),
+                        ),
+                    ],
+                }
             }
         }),
         Line::from(vec![

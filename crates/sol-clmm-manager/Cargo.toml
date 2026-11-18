@@ -3,7 +3,7 @@ name = "sol-clmm-manager"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared Solana CLMM manager: RPC metering, SQLite store, token metadata, Jupiter/Titan quotes"
+description = "Shared Solana CLMM manager: RPC metering, SQLite store, token metadata, Jupiter/Titan/TensorSoft quotes"
 readme = "../../README.md"
 
 [features]

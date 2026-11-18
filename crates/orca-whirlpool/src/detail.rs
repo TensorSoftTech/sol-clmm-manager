@@ -337,6 +337,9 @@ pub fn fetch_position_detail(
         None
     };
 
+    let market =
+        sol_clmm_manager::try_pool_market_stats(Venue::OrcaWhirlpool, &row.pool, Some(rpc.meter()));
+
     // Claimable only: actively emitting, or inactive with owed > 0.
     // Non-active empty slots → no CreateIdempotent reward ATA (rent).
     let reward_vaults: Vec<(u8, Pubkey, Pubkey)> = full
@@ -430,6 +433,7 @@ pub fn fetch_position_detail(
             })
             .unwrap_or_else(|| "—".into()),
         period,
+        market,
         wallet_balances: None,
     })
 }
